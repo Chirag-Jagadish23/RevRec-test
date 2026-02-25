@@ -1,10 +1,9 @@
 # Dummy auth.py to allow the application to start without a real authentication system.
 
-def require(perms: list):
+def require(perms=None):
     def decorator(func):
-        return func
+        return func  # <-- disable auth for dev
     return decorator
-
 async def build_principal(request):
     """
     Dummy function to mock a principal.

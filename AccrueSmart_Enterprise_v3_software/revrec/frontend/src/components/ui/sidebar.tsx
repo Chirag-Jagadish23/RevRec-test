@@ -16,6 +16,7 @@ import {
   Calculator,
   TrendingUp,
   ShieldCheck,
+  CalendarCheck2,
   type LucideIcon,
 } from "lucide-react";
 
@@ -30,6 +31,10 @@ const items: NavItem[] = [
   { href: "/contracts", label: "Contracts", icon: FileText },
   { href: "/viewer", label: "PDF Viewer", icon: ScanText },
   { href: "/negotiation", label: "Deal Desk AI", icon: Bot },
+
+  // ✅ Add Close Dashboard here
+  { href: "/close", label: "Close Dashboard", icon: CalendarCheck2 },
+
   { href: "/revrec_codes", label: "RevRec Codes", icon: Shapes },
   { href: "/catalog", label: "Product Catalog", icon: Package },
   { href: "/schedules/editor", label: "Schedules (Grid)", icon: Table },

@@ -1,38 +1,98 @@
 "use client";
+
 import { useEffect, useState } from "react";
 import { api } from "@/src/lib/api";
 import { Input } from "@/src/components/ui/input";
 import { Button } from "@/src/components/ui/button";
 import { Card } from "@/src/components/ui/card";
 
-type Rrc = { id:string; code:string; rule_type:"straight_line"|"point_in_time"|"milestone"|"percent_complete"|"usage"; params:any };
-type Product = { id:string; code:string; name:string };
+type RevRec = {
+  code: string;
+  rule_type: string;
+  description?: string;
+};
 
-export default function RevRecCodesPage(){
-  const [list,setList]=useState<Rrc[]>([]);
-  const [code,setCode]=useState(""); const [rule,setRule]=useState<Rrc["rule_type"]>("straight_line");
-  const [params,setParams]=useState('{"months":12}');
-  const [products,setProducts]=useState<Product[]>([]);
-  const [mapSku,setMapSku]=useState(""); const [mapRrc,setMapRrc]=useState("");
+type Product = {
+  id: string;
+  code: string;
+  name: string;
+};
 
-  async function load(){
-    setList(await api("/codes/revrec"));
-    const prods = await api("/codes/products");
-    setProducts(prods.map((p:any)=>({id:p.id, code:p.code, name:p.name})));
-  }
-  async function add(){
-    await api(`/codes/revrec?code=${encodeURIComponent(code)}&rule_type=${rule}`,{
-      method:"POST", body: JSON.stringify(JSON.parse(params||"{}"))
-    });
-    setCode(""); setParams("{}"); await load();
-  }
-  async function map(){
-    if(!mapSku || !mapRrc) return;
-    await api(`/codes/map?product_code=${encodeURIComponent(mapSku)}&revrec_code=${encodeURIComponent(mapRrc)}`,{method:"POST"});
-    await load();
+export default function RevRecCodesPage() {
+  const [list, setList] = useState<RevRec[]>([]);
+  const [products, setProducts] = useState<Product[]>([]);
+
+  const [code, setCode] = useState("");
+  const [rule, setRule] = useState("straight_line");
+
+  const [mapSku, setMapSku] = useState("");
+  const [mapRrc, setMapRrc] = useState("");
+
+  async function load() {
+    try {
+      setList(await api("/revrec_codes"));
+
+      const prods = await api("/catalog");
+      setProducts(
+        prods.map((p: any) => ({
+          id: p.product_code,
+          code: p.product_code,
+          name: p.name,
+        }))
+      );
+    } catch (e) {
+      console.error(e);
+      alert("Failed to load revrec codes or catalog");
+    }
   }
 
-  useEffect(()=>{ load(); },[]);
+  async function add() {
+    if (!code) return;
+
+    try {
+      await api("/revrec_codes", {
+        method: "POST",
+        body: JSON.stringify({
+          code,
+          rule_type: rule,
+          description: `Rule ${code}`,
+        }),
+      });
+
+      alert(`Added/updated RevRec code: ${code}`);
+      setCode("");
+      await load();
+    } catch (e) {
+      console.error(e);
+      alert("Failed to add revrec code");
+    }
+  }
+
+  async function map() {
+    if (!mapSku || !mapRrc) return;
+
+    try {
+      await api("/revrec_codes/map", {
+        method: "POST",
+        body: JSON.stringify({
+          product_code: mapSku,
+          revrec_code: mapRrc,
+        }),
+      });
+
+      alert(`Mapped ${mapSku} → ${mapRrc}`);
+      setMapSku("");
+      setMapRrc("");
+      await load();
+    } catch (e) {
+      console.error(e);
+      alert("Mapping failed");
+    }
+  }
+
+  useEffect(() => {
+    load();
+  }, []);
 
   return (
     <div className="max-w-5xl mx-auto space-y-6">
@@ -40,41 +100,64 @@ export default function RevRecCodesPage(){
 
       <Card className="p-4 space-y-2">
         <div className="grid grid-cols-3 gap-2">
-          <Input placeholder="Code (e.g., 606_SL_12)" value={code} onChange={e=>setCode(e.target.value)} />
-          <select className="border rounded px-2" value={rule} onChange={e=>setRule(e.target.value as any)}>
+          <Input
+            placeholder="Code"
+            value={code}
+            onChange={(e) => setCode(e.target.value)}
+          />
+          <select
+            className="border rounded px-2"
+            value={rule}
+            onChange={(e) => setRule(e.target.value)}
+          >
             <option value="straight_line">straight_line</option>
-            <option value="point_in_time">point_in_time</option>
-            <option value="milestone">milestone</option>
-            <option value="percent_complete">percent_complete</option>
-            <option value="usage">usage</option>
+            <option value="immediate">immediate</option>
           </select>
-          <Input placeholder='Params JSON ({"months":12})' value={params} onChange={e=>setParams(e.target.value)} />
+          <Button onClick={add}>Add RevRec Code</Button>
         </div>
-        <Button onClick={add}>Add RevRec Code</Button>
       </Card>
 
       <Card className="p-4 space-y-2">
         <div className="grid grid-cols-3 gap-2">
-          <Input placeholder="Product Code (SKU-001)" value={mapSku} onChange={e=>setMapSku(e.target.value)} />
-          <Input placeholder="RevRec Code (606_SL_12)" value={mapRrc} onChange={e=>setMapRrc(e.target.value)} />
+          <Input
+            placeholder="Product Code (SKU-001)"
+            value={mapSku}
+            onChange={(e) => setMapSku(e.target.value)}
+          />
+          <Input
+            placeholder="RevRec Code"
+            value={mapRrc}
+            onChange={(e) => setMapRrc(e.target.value)}
+          />
           <Button onClick={map}>Map Product → RevRec</Button>
         </div>
+
+        {products.length > 0 && (
+          <div className="text-xs text-gray-600 pt-2">
+            Products loaded: {products.map((p) => p.code).join(", ")}
+          </div>
+        )}
       </Card>
 
       <Card className="p-0 overflow-x-auto">
         <table className="min-w-full text-sm">
           <thead className="bg-gray-50">
-            <tr><th className="p-2 text-left">Code</th><th className="p-2">Rule</th><th className="p-2 text-left">Params</th></tr>
-          </thead>
-        <tbody>
-          {list.map(rr=>(
-            <tr key={rr.id} className="border-t">
-              <td className="p-2">{rr.code}</td>
-              <td className="p-2 text-center">{rr.rule_type}</td>
-              <td className="p-2 font-mono text-xs">{JSON.stringify(rr.params)}</td>
+            <tr>
+              <th className="p-2 text-left">Code</th>
+              <th className="p-2 text-left">Rule</th>
+              <th className="p-2 text-left">Description</th>
             </tr>
-          ))}
-        </tbody></table>
+          </thead>
+          <tbody>
+            {list.map((rr) => (
+              <tr key={rr.code} className="border-t">
+                <td className="p-2">{rr.code}</td>
+                <td className="p-2">{rr.rule_type}</td>
+                <td className="p-2">{rr.description || "-"}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
       </Card>
     </div>
   );

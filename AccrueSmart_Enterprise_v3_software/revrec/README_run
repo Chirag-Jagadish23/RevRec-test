@@ -1,0 +1,60 @@
+Go to backend directory
+python3 -m venv .venv
+source .venv/bin/activate
+pip install --upgrade pip
+pip install -r requirements.txt
+pip install pdfminer.six
+pip install sqlmodel pandas openpyxl
+source .venv/bin/activate
+sqlite3 revrec.db "
+DROP TABLE IF EXISTS product;
+DROP TABLE IF EXISTS revreccode;
+DROP TABLE IF EXISTS skurevrecrule;
+"
+rm revrec.db
+python -m uvicorn app.main:app --reload
+sqlite3 revrec.db ".tables"
+
+Note: 
+
+sqlite3 revrec.db "ALTER TABLE schedule_rows ADD COLUMN event_type TEXT;"
+sqlite3 revrec.db "ALTER TABLE schedule_rows ADD COLUMN is_adjustment INTEGER DEFAULT 0;"
+sqlite3 revrec.db "ALTER TABLE schedule_rows ADD COLUMN notes TEXT;"
+sqlite3 revrec.db "ALTER TABLE schedule_rows ADD COLUMN effective_date TEXT;"
+sqlite3 revrec.db "ALTER TABLE schedule_rows ADD COLUMN reference_row_id INTEGER;"
+
+find frontend/src -type f | grep "costs"
+ find frontend/src -type f | grep "costs"
+frontend/src/app/costs/page.tsx
+grep -R "include_router" backend/app/main.py
+grep -R "APIRouter(prefix=" backend/app/routers
+grep -R 'api("/costs' frontend/src
+find backend/app -type f | grep "costs"
+o
+
+put in your ~/.zshrc export OPENAI_API_KEY="your-openai-api-key"
+export LLM_PROVIDER="openai"
+export LLM_MODEL="gpt-4o-mini"
+
+source ~/.zshrc
+
+
+to update frontend
+
+./src/components/ui/sidebar.tsx
+ vi frontend/src/app/page.tsx
+
+ vi frontend/src/app/layout.tsx
+frontend/src/components/AppSidebar.tsx (important to update to add to navigation bar)
+
+
+company name
+
+1) Dashboard page (frontend/src/app/page.tsx)
+
+<div className="text-lg font-semibold">DemoCo Finance</div>
+
+<div className="text-lg font-semibold">DemoCo Finance</div>
+
+<div className="text-sm font-medium">DemoCo Finance</div>
+

@@ -1,0 +1,216 @@
+"use client";
+
+import { useState } from "react";
+import { api } from "@/src/lib/api";
+import { Button, Card, Input } from "@/src/components/ui";
+
+type AssetForm = {
+  asset_id: string;
+  asset_name: string;
+  category: string;
+  in_service_date: string;
+  cost: number;
+  salvage_value: number;
+  useful_life_months: number;
+  method: "sl" | "ddb" | "db_switch_sl";
+  convention: "full_month" | "mid_month" | "half_year";
+  decline_rate: number;
+  disposal_date?: string;
+};
+
+export default function FixedAssetsPage() {
+  const [form, setForm] = useState<AssetForm>({
+    asset_id: "FA-1001",
+    asset_name: "MacBook Pro Fleet",
+    category: "Computer Equipment",
+    in_service_date: "2025-01-15",
+    cost: 24000,
+    salvage_value: 2000,
+    useful_life_months: 36,
+    method: "db_switch_sl",
+    convention: "mid_month",
+    decline_rate: 2.0,
+    disposal_date: "",
+  });
+
+  const [schedule, setSchedule] = useState<any>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [downloading, setDownloading] = useState<string | null>(null);
+
+  function setField<K extends keyof AssetForm>(key: K, value: AssetForm[K]) {
+    setForm((prev) => ({ ...prev, [key]: value }));
+  }
+
+  async function runSchedule() {
+    setLoading(true);
+    setError(null);
+    try {
+      const payload = {
+        ...form,
+        disposal_date: form.disposal_date || null,
+      };
+      const res = await api("/fixed-assets/depreciation/schedule", {
+        method: "POST",
+        body: JSON.stringify(payload),
+      });
+      setSchedule(res);
+    } catch (e: any) {
+      setError(e?.message || "Failed to compute depreciation schedule.");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function download(kind: "schedule" | "journals") {
+    setDownloading(kind);
+    setError(null);
+    try {
+      const payload = {
+        ...form,
+        disposal_date: form.disposal_date || null,
+      };
+      const endpoint =
+        kind === "schedule"
+          ? "/fixed-assets/depreciation/export"
+          : "/fixed-assets/depreciation/export-journals";
+
+      const res = await api(endpoint, {
+        method: "POST",
+        body: JSON.stringify(payload),
+      });
+
+      const blob = new Blob([res.content], { type: "text/csv" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = res.filename || `fixed_assets_${kind}.csv`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch (e: any) {
+      setError(e?.message || "Failed to export CSV.");
+    } finally {
+      setDownloading(null);
+    }
+  }
+
+  const rows = schedule?.rows || [];
+  const summary = schedule?.summary || null;
+
+  return (
+    <div className="max-w-7xl mx-auto space-y-4">
+      <h1 className="text-xl font-semibold">Fixed Assets & Depreciation</h1>
+
+      <Card className="p-4 space-y-3">
+        <div className="grid grid-cols-1 md:grid-cols-4 gap-2">
+          <Input value={form.asset_id} onChange={(e: any) => setField("asset_id", e.target.value)} placeholder="Asset ID" />
+          <Input value={form.asset_name} onChange={(e: any) => setField("asset_name", e.target.value)} placeholder="Asset Name" />
+          <Input value={form.category} onChange={(e: any) => setField("category", e.target.value)} placeholder="Category" />
+          <Input type="date" value={form.in_service_date} onChange={(e: any) => setField("in_service_date", e.target.value)} />
+
+          <Input type="number" value={String(form.cost)} onChange={(e: any) => setField("cost", Number(e.target.value))} placeholder="Cost" />
+          <Input type="number" value={String(form.salvage_value)} onChange={(e: any) => setField("salvage_value", Number(e.target.value))} placeholder="Salvage Value" />
+          <Input type="number" value={String(form.useful_life_months)} onChange={(e: any) => setField("useful_life_months", Number(e.target.value))} placeholder="Useful Life (Months)" />
+          <Input type="number" value={String(form.decline_rate)} onChange={(e: any) => setField("decline_rate", Number(e.target.value))} placeholder="Decline Rate (DDB)" />
+
+          <select
+            className="border rounded px-2 py-1 text-sm"
+            value={form.method}
+            onChange={(e: any) => setField("method", e.target.value)}
+          >
+            <option value="sl">Straight-Line</option>
+            <option value="ddb">Double Declining Balance</option>
+            <option value="db_switch_sl">DB w/ SL Switch</option>
+          </select>
+
+          <select
+            className="border rounded px-2 py-1 text-sm"
+            value={form.convention}
+            onChange={(e: any) => setField("convention", e.target.value)}
+          >
+            <option value="full_month">Full Month</option>
+            <option value="mid_month">Mid Month</option>
+            <option value="half_year">Half Year</option>
+          </select>
+
+          <Input
+            type="date"
+            value={form.disposal_date || ""}
+            onChange={(e: any) => setField("disposal_date", e.target.value)}
+            placeholder="Disposal Date (optional)"
+          />
+        </div>
+
+        <div className="flex gap-2 flex-wrap">
+          <Button onClick={runSchedule} disabled={loading}>
+            {loading ? "Computing..." : "Compute Depreciation"}
+          </Button>
+          <Button onClick={() => download("schedule")} disabled={downloading !== null}>
+            {downloading === "schedule" ? "Exporting..." : "Export Schedule CSV"}
+          </Button>
+          <Button onClick={() => download("journals")} disabled={downloading !== null}>
+            {downloading === "journals" ? "Exporting..." : "Export Journals CSV"}
+          </Button>
+        </div>
+      </Card>
+
+      {error && <div className="text-red-600 text-sm">{error}</div>}
+
+      {summary && (
+        <div className="grid grid-cols-1 md:grid-cols-5 gap-3">
+          <Card className="p-4">
+            <div className="text-xs text-gray-500">Cost</div>
+            <div className="text-lg font-semibold">${summary.cost?.toFixed?.(2) ?? summary.cost}</div>
+          </Card>
+          <Card className="p-4">
+            <div className="text-xs text-gray-500">Depreciable Basis</div>
+            <div className="text-lg font-semibold">${summary.depreciable_basis?.toFixed?.(2) ?? summary.depreciable_basis}</div>
+          </Card>
+          <Card className="p-4">
+            <div className="text-xs text-gray-500">Total Depreciation</div>
+            <div className="text-lg font-semibold">${summary.total_depreciation?.toFixed?.(2) ?? summary.total_depreciation}</div>
+          </Card>
+          <Card className="p-4">
+            <div className="text-xs text-gray-500">Ending NBV</div>
+            <div className="text-lg font-semibold">${summary.ending_nbv?.toFixed?.(2) ?? summary.ending_nbv}</div>
+          </Card>
+          <Card className="p-4">
+            <div className="text-xs text-gray-500">Method / Convention</div>
+            <div className="text-sm font-medium">{summary.method} / {summary.convention}</div>
+          </Card>
+        </div>
+      )}
+
+      {rows.length > 0 && (
+        <Card className="p-0 overflow-x-auto">
+          <table className="min-w-full text-sm">
+            <thead className="bg-gray-50">
+              <tr>
+                <th className="p-2 text-left">Period</th>
+                <th className="p-2 text-left">Month</th>
+                <th className="p-2 text-left">Dep Expense</th>
+                <th className="p-2 text-left">Accum Dep (Open)</th>
+                <th className="p-2 text-left">Accum Dep (End)</th>
+                <th className="p-2 text-left">NBV (Open)</th>
+                <th className="p-2 text-left">NBV (End)</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((r: any) => (
+                <tr key={r.period} className="border-t">
+                  <td className="p-2">{r.period}</td>
+                  <td className="p-2">{r.month}</td>
+                  <td className="p-2">${Number(r.depreciation_expense).toFixed(2)}</td>
+                  <td className="p-2">${Number(r.accumulated_depreciation_opening).toFixed(2)}</td>
+                  <td className="p-2">${Number(r.accumulated_depreciation_ending).toFixed(2)}</td>
+                  <td className="p-2">${Number(r.net_book_value_opening).toFixed(2)}</td>
+                  <td className="p-2">${Number(r.net_book_value_ending).toFixed(2)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </Card>
+      )}
+    </div>
+  );
+}

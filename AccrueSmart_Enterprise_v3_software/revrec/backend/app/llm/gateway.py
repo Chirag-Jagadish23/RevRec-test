@@ -1,181 +1,243 @@
-
 # backend/app/llm/gateway.py
 from __future__ import annotations
+
+from typing import Dict, Any
 import os
 import json
-from typing import Dict, Any, Optional
+
 
 class LLMGateway:
     """
-    Gateway for LLM operations - supports both mock and real LLM providers.
-    Set LLM_PROVIDER environment variable to enable real LLM calls.
+    Shared LLM gateway for all modules.
+
+    Supports:
+    - mock mode (default, no API key needed)
+    - openai mode (real LLM)
+
+    Environment variables:
+      LLM_PROVIDER=mock | openai
+      LLM_MODEL=gpt-4o-mini (or another model)
+      OPENAI_API_KEY=...
     """
-    
+
     def __init__(self):
-        self.provider = os.getenv("LLM_PROVIDER", "mock")
-        self.api_key = os.getenv("OPENAI_API_KEY") or os.getenv("ANTHROPIC_API_KEY")
-        
+        self.provider = os.getenv("LLM_PROVIDER", "mock").strip().lower()
+        self.model = os.getenv("LLM_MODEL", "gpt-4o-mini").strip()
+
+    # ----------------------------
+    # Public methods used by services
+    # ----------------------------
     def audit_memo(self, payload: Dict[str, Any]) -> str:
         """
-        Generate an audit memo based on the provided context.
-        
-        Args:
-            payload: Dictionary with context information (contract_id, schedules, risks, etc.)
-            
-        Returns:
-            str: Generated audit memo text
+        Used by auditor / audit summaries.
         """
+        system = (
+            "You are an accounting and compliance audit assistant. "
+            "Summarize findings clearly, identify risks, and suggest next actions."
+        )
+        user = (
+            "Generate a concise audit summary from this structured payload.\n\n"
+            f"{json.dumps(payload, indent=2, default=str)}"
+        )
+        return self._complete(system=system, user=user, fallback=self._mock_audit(payload))
+
+    def tax_memo(self, payload: Dict[str, Any]) -> str:
+        """
+        Optional dedicated tax memo path (ASC 740).
+        """
+        system = (
+            "You are a technical accounting tax assistant. "
+            "Write a concise ASC 740 memo with deferred tax interpretation."
+        )
+        user = (
+            "Generate an ASC 740 memo from this structured payload.\n\n"
+            f"{json.dumps(payload, indent=2, default=str)}"
+        )
+        return self._complete(system=system, user=user, fallback=self._mock_tax(payload))
+
+    def forecast_commentary(self, payload: Dict[str, Any]) -> str:
+        """
+        Optional dedicated forecast commentary path.
+        """
+        system = (
+            "You are a finance forecasting assistant. "
+            "Summarize forecast trends, uncertainty, and practical cautions."
+        )
+        user = (
+            "Generate a short revenue forecast commentary from this structured payload.\n\n"
+            f"{json.dumps(payload, indent=2, default=str)}"
+        )
+        return self._complete(system=system, user=user, fallback=self._mock_forecast(payload))
+
+    def deal_desk_memo(self, payload: Dict[str, Any], review: Dict[str, Any]) -> str:
+        """
+        Deal Desk AI memo (commercial + accounting + legal + rev rec aware).
+        """
+        system = (
+            "You are an expert SaaS Deal Desk reviewer with strong knowledge of "
+            "B2B pricing, approvals, legal terms, collections risk, and revenue recognition."
+        )
+        user = (
+            "Write a concise, practical memo with these sections:\n"
+            "1) Deal Summary\n"
+            "2) Key Risks\n"
+            "3) Recommended Changes\n"
+            "4) Approval Recommendation\n"
+            "5) Sales Talking Points\n\n"
+            "Be specific and action-oriented. Mention rev rec implications when relevant.\n\n"
+            f"Structured review:\n{json.dumps(review, indent=2, default=str)}\n\n"
+            f"Deal payload:\n{json.dumps(payload, indent=2, default=str)}"
+        )
+        return self._complete(system=system, user=user, fallback=self._mock_deal_desk(payload, review))
+
+    def chat(self, prompt: str) -> str:
+        """
+        Generic chat helper for ad hoc use by services.
+        Keeps compatibility if some services call llm.chat(prompt).
+        """
+        system = "You are a helpful enterprise finance and accounting AI assistant."
+        return self._complete(system=system, user=prompt, fallback=prompt + "\n\n(Mock mode active.)")
+
+    # ----------------------------
+    # Core completion dispatcher
+    # ----------------------------
+    def _complete(self, system: str, user: str, fallback: str) -> str:
         if self.provider == "mock":
-            return self._mock_audit_memo(payload)
-        elif self.provider == "openai":
-            return self._openai_audit_memo(payload)
-        elif self.provider == "anthropic":
-            return self._anthropic_audit_memo(payload)
-        else:
-            return self._mock_audit_memo(payload)
-    
-    def _mock_audit_memo(self, payload: Dict[str, Any]) -> str:
-        """Generate a mock audit memo for development/testing"""
-        contract_id = payload.get("contract_id", "UNKNOWN")
-        customer = payload.get("customer", "N/A")
-        
-        memo = f"""
-AUDIT MEMO
-Contract: {contract_id}
-Customer: {customer}
-Date: {self._get_current_date()}
+            return fallback
 
-EXECUTIVE SUMMARY:
-This memo summarizes the key audit findings and compliance status for the referenced contract.
+        if self.provider == "openai":
+            return self._openai_complete(system=system, user=user, fallback=fallback)
 
-REVENUE RECOGNITION ASSESSMENT:
-- Contract structure appears compliant with ASC 606
-- Performance obligations properly identified
-- Transaction price allocation follows relative SSP methodology
+        # Unknown provider -> safe fallback
+        return fallback + f"\n\n(Note: Unknown LLM_PROVIDER='{self.provider}', using mock.)"
 
-"""
-        
-        if "stats" in payload:
-            stats = payload["stats"]
-            memo += f"""
-JOURNAL ENTRY STATISTICS:
-- Total Journals: {stats.get('total_journals', 0)}
-- Posted: {stats.get('posted_journals', 0)}
-- Pending: {stats.get('unposted_journals', 0)}
-
-"""
-        
-        if "anomalies" in payload:
-            anomalies = payload.get("anomalies", [])
-            if anomalies:
-                memo += "ANOMALIES DETECTED:\n"
-                for anomaly in anomalies:
-                    memo += f"- {anomaly}\n"
-                memo += "\n"
-            else:
-                memo += "No significant anomalies detected.\n\n"
-        
-        if "modules" in payload:
-            modules = payload.get("modules", [])
-            memo += f"MODULES ANALYZED: {', '.join(modules)}\n\n"
-        
-        memo += """
-RECOMMENDATIONS:
-1. Continue monitoring for compliance with established policies
-2. Review any flagged anomalies with appropriate stakeholders
-3. Maintain proper documentation for audit trail purposes
-
-CONCLUSION:
-Based on the analysis performed, the contract and related transactions appear to be
-in substantial compliance with applicable accounting standards and internal policies.
-
----
-This memo was generated by AuditWise AI
-"""
-        return memo.strip()
-    
-    def _openai_audit_memo(self, payload: Dict[str, Any]) -> str:
-        """Generate audit memo using OpenAI API"""
+    def _openai_complete(self, system: str, user: str, fallback: str) -> str:
+        """
+        Real OpenAI path.
+        Requires:
+          pip install openai
+          OPENAI_API_KEY set
+        """
         try:
-            import openai
-            
-            openai.api_key = self.api_key
-            
-            prompt = self._build_audit_prompt(payload)
-            
-            response = openai.ChatCompletion.create(
-                model="gpt-4",
-                messages=[
-                    {"role": "system", "content": "You are an expert financial auditor creating comprehensive audit memos."},
-                    {"role": "user", "content": prompt}
+            from openai import OpenAI
+        except Exception:
+            return fallback + "\n\n(OpenAI SDK not installed; using mock fallback.)"
+
+        api_key = os.getenv("OPENAI_API_KEY")
+        if not api_key:
+            return fallback + "\n\n(OPENAI_API_KEY not set; using mock fallback.)"
+
+        try:
+            client = OpenAI(api_key=api_key)
+
+            resp = client.responses.create(
+                model=self.model,
+                input=[
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": user},
                 ],
-                temperature=0.3,
-                max_tokens=1500
             )
-            
-            return response.choices[0].message.content
-            
+
+            text = getattr(resp, "output_text", None)
+            if text and str(text).strip():
+                return str(text).strip()
+
+            return fallback + "\n\n(OpenAI returned empty output; using fallback.)"
+
         except Exception as e:
-            print(f"OpenAI API error: {e}")
-            return self._mock_audit_memo(payload)
-    
-    def _anthropic_audit_memo(self, payload: Dict[str, Any]) -> str:
-        """Generate audit memo using Anthropic API"""
+            return fallback + f"\n\n(OpenAI call failed: {e})"
+
+    # ----------------------------
+    # Mock fallbacks (dev-safe)
+    # ----------------------------
+    def _mock_audit(self, payload: Dict[str, Any]) -> str:
+        title = payload.get("title", "AI Auditor Summary")
+        scores = payload.get("scores", {})
+        notes = payload.get("notes", [])
+        avg = payload.get("avg_score")
+
+        out = [title, ""]
+        if avg is not None:
+            out.append(f"Overall score: {avg}")
+            out.append("")
+
+        if scores:
+            out.append("Module scores:")
+            for k, v in scores.items():
+                out.append(f"- {k}: {v}")
+            out.append("")
+
+        if notes:
+            out.append("Key observations:")
+            for n in notes:
+                out.append(f"- {n}")
+            out.append("")
+
+        out.append("LLM commentary is not configured, so this is a rules-based summary.")
+        return "\n".join(out)
+
+    def _mock_tax(self, payload: Dict[str, Any]) -> str:
+        company = payload.get("company", "Company")
+        results = payload.get("results", {})
+        gross = results.get("gross", {})
+
+        statutory_rate = results.get("statutory_rate", 0)
         try:
-            import anthropic
-            
-            client = anthropic.Anthropic(api_key=self.api_key)
-            
-            prompt = self._build_audit_prompt(payload)
-            
-            message = client.messages.create(
-                model="claude-3-sonnet-20240229",
-                max_tokens=1500,
-                messages=[
-                    {"role": "user", "content": prompt}
-                ]
-            )
-            
-            return message.content[0].text
-            
-        except Exception as e:
-            print(f"Anthropic API error: {e}")
-            return self._mock_audit_memo(payload)
-    
-    def _build_audit_prompt(self, payload: Dict[str, Any]) -> str:
-        """Build a prompt for LLM audit memo generation"""
-        prompt = f"""
-Create a professional audit memo based on the following information:
+            statutory_rate_fmt = f"{float(statutory_rate):.2%}"
+        except Exception:
+            statutory_rate_fmt = str(statutory_rate)
 
-Contract ID: {payload.get('contract_id', 'N/A')}
-Customer: {payload.get('customer', 'N/A')}
-"""
-        
-        if "stats" in payload:
-            prompt += f"\nJournal Statistics: {json.dumps(payload['stats'], indent=2)}"
-        
-        if "anomalies" in payload:
-            prompt += f"\nAnomalies: {json.dumps(payload['anomalies'], indent=2)}"
-        
-        if "modules" in payload:
-            prompt += f"\nModules Analyzed: {', '.join(payload['modules'])}"
-        
-        prompt += """
+        return (
+            f"ASC 740 Memo — {company}\n\n"
+            f"Statutory tax rate: {statutory_rate_fmt}\n"
+            f"Gross DTL: ${gross.get('DTL', 0):,.2f} | Gross DTA: ${gross.get('DTA', 0):,.2f}\n"
+            f"Valuation allowance: ${results.get('valuation_allowance', 0):,.2f}\n"
+            f"Net deferred tax position: ${results.get('net_deferred_tax', 0):,.2f}\n"
+            f"Reversal timing (by year): {results.get('reversal_buckets', {})}\n\n"
+            "LLM commentary is not configured, so this is a rules-based summary."
+        )
 
-Please provide:
-1. Executive summary
-2. Assessment of revenue recognition compliance
-3. Analysis of any anomalies
-4. Recommendations
-5. Conclusion
+    def _mock_forecast(self, payload: Dict[str, Any]) -> str:
+        method = payload.get("method", "unknown")
+        horizon = payload.get("horizon", "n/a")
+        return (
+            f"Forecast commentary (mock)\n\n"
+            f"Method: {method}\n"
+            f"Horizon: {horizon} periods\n\n"
+            "LLM commentary is not configured, so this is a rules-based summary."
+        )
 
-Format as a professional audit memo.
-"""
-        return prompt
-    
-    @staticmethod
-    def _get_current_date() -> str:
-        """Get current date in YYYY-MM-DD format"""
-        from datetime import date
-        return date.today().isoformat()
+    def _mock_deal_desk(self, payload: Dict[str, Any], review: Dict[str, Any]) -> str:
+        customer = payload.get("customer_name", "Customer")
+        exceptions = review.get("exceptions", [])
+        recs = review.get("recommendations", [])
+        approval_path = review.get("approval_path", [])
+        totals = review.get("totals", {})
+        score = review.get("overall_health_score", 0)
 
+        ex_lines = "\n".join(
+            [f"- [{e.get('severity','').upper()}] {e.get('message','')}" for e in exceptions]
+        ) or "- None"
+
+        rec_lines = "\n".join([f"- {r}" for r in recs]) or "- None"
+        ap_lines = " -> ".join(approval_path) if approval_path else "Sales Manager"
+
+        return (
+            f"Deal Desk AI Memo\n\n"
+            f"Deal Summary\n"
+            f"- Customer: {customer}\n"
+            f"- Gross: {totals.get('gross_total', 0)}\n"
+            f"- Net: {totals.get('net_total', 0)}\n"
+            f"- Blended Discount: {totals.get('blended_discount_pct', 0)}%\n"
+            f"- Overall Health Score: {score}\n\n"
+            f"Key Risks\n"
+            f"{ex_lines}\n\n"
+            f"Recommended Changes\n"
+            f"{rec_lines}\n\n"
+            f"Approval Recommendation\n"
+            f"- Route: {ap_lines}\n\n"
+            f"Sales Talking Points\n"
+            f"- Position any pricing changes around term commitment and billing structure.\n"
+            f"- Clarify acceptance/termination language to avoid downstream delays.\n\n"
+            f"LLM commentary is not configured, so this is a rules-based summary."
+        )

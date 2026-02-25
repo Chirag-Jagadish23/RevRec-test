@@ -20,7 +20,7 @@ class CostsIn(BaseModel):
     curve: Optional[Annotated[List[float], Field(min_length=1)]] = None
 
 @router.post("/amortize")
-@require(perms=["costs.run"])  # add this perm in schema below
+#@require(perms=["costs.run"])  # add this perm in schema below
 def amortize(body: CostsIn) -> Dict[str, Any]:
     try:
         res = amortize_cost(
