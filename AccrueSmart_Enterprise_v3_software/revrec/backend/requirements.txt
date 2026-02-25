@@ -7,6 +7,7 @@ pandas
 numpy
 reportlab
 pdfminer.six
+openpyxl
 sqlmodel>=0.0.14 # Added for database models and interactions
 psycopg2-binary>=2.9  # PostgreSQL driver for Supabase
 openai>=1.0.0  # Optional - for OpenAI integration
