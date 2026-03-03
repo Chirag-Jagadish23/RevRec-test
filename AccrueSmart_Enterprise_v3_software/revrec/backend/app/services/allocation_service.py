@@ -30,6 +30,8 @@ def allocate_contract(contract: ContractRecord, lines: List[ContractLine], sessi
 
         # Monthly amount (for straight-line)
         monthly_amount = round(allocated_total / months, 2)
+        # Last row absorbs any cent-level rounding remainder so total always equals allocated_total
+        last_row_amount = round(allocated_total - monthly_amount * (months - 1), 2)
 
         # Load the rule object
         rule = session.get(RevRecCode, line.revrec_code)
@@ -40,6 +42,7 @@ def allocate_contract(contract: ContractRecord, lines: List[ContractLine], sessi
             "rule_type": rule.rule_type if rule else "straight_line",
             "allocated_total": allocated_total,
             "monthly_amount": monthly_amount,
+            "last_row_amount": last_row_amount,
             "months": months,
         })
 

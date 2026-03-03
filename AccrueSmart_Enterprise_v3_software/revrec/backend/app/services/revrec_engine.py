@@ -23,9 +23,11 @@ def build_schedule(contract, allocations, session: Session):
     for alloc in allocations:
         product = session.get(Product, alloc["product_code"])
 
+        last_idx = len(periods) - 1
         for i, p in enumerate(periods):
             amount = (
                 alloc["allocated_total"] if alloc["rule_type"] == "immediate" and i == 0
+                else alloc.get("last_row_amount", alloc["monthly_amount"]) if alloc["rule_type"] == "straight_line" and i == last_idx
                 else alloc["monthly_amount"] if alloc["rule_type"] == "straight_line"
                 else 0
             )
