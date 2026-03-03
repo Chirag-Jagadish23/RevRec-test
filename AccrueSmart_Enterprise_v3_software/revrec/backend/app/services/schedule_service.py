@@ -3,17 +3,47 @@ from sqlalchemy import delete
 from ..models.models import ScheduleRow, Product, RevRecCode
 
 
-def clear_schedule(contract_id: str, session: Session):
-    """Delete all schedule rows for a given contract."""
-    session.exec(
-        delete(ScheduleRow).where(ScheduleRow.contract_id == contract_id)
-    )
+def clear_schedule(contract_id: str, session: Session, preserve_adjustments: bool = False) -> int:
+    """Delete schedule rows for a given contract.
+
+    Args:
+        preserve_adjustments: When True, rows with is_adjustment=True are kept untouched.
+                              Returns the count of preserved adjustment rows.
+                              When False (default), all rows are deleted (full wipe).
+    """
+    preserved_count = 0
+
+    if preserve_adjustments:
+        preserved_count = len(
+            session.exec(
+                select(ScheduleRow).where(
+                    ScheduleRow.contract_id == contract_id,
+                    ScheduleRow.is_adjustment == True,
+                )
+            ).all()
+        )
+        session.exec(
+            delete(ScheduleRow).where(
+                ScheduleRow.contract_id == contract_id,
+                ScheduleRow.is_adjustment == False,
+            )
+        )
+    else:
+        session.exec(
+            delete(ScheduleRow).where(ScheduleRow.contract_id == contract_id)
+        )
+
     session.commit()
+    return preserved_count
 
 
-def save_schedule_rows(contract_id: str, schedule: list, session: Session):
-    """Replace the schedule for a contract with new rows."""
-    clear_schedule(contract_id, session)
+def save_schedule_rows(contract_id: str, schedule: list, session: Session) -> dict:
+    """Replace the allocated schedule for a contract, preserving any posted adjustments.
+
+    Returns:
+        dict with key 'preserved_adjustments' (int) — count of adjustment rows kept untouched.
+    """
+    preserved_count = clear_schedule(contract_id, session, preserve_adjustments=True)
 
     for row in schedule:
         session.add(
@@ -27,6 +57,7 @@ def save_schedule_rows(contract_id: str, schedule: list, session: Session):
         )
 
     session.commit()
+    return {"preserved_adjustments": preserved_count}
 
 
 def load_schedule(contract_id: str, session: Session):

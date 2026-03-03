@@ -116,8 +116,14 @@ def save_grid(contract_id: str, payload: dict, session: Session = Depends(get_se
             "source": r.get("source", "manual"),
         })
 
-    save_schedule_rows(contract_id, cleaned, session)
-    return {"status": "saved"}
+    result = save_schedule_rows(contract_id, cleaned, session)
+
+    response = {"status": "saved"}
+    if result["preserved_adjustments"] > 0:
+        response["warnings"] = [
+            f"{result['preserved_adjustments']} posted adjustment row(s) were preserved and not overwritten."
+        ]
+    return response
 
 
 @router.post("/adjust")

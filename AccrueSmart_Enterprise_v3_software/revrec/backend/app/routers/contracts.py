@@ -174,12 +174,19 @@ def allocate(payload: dict, session: Session = Depends(get_session)):
     allocations = allocate_contract(contract, lines, session)
     schedule = build_schedule(contract, allocations, session)
 
-    # Persist schedule rows
-    save_schedule_rows(cid, schedule, session)
+    # Persist schedule rows (adjustment rows are preserved automatically)
+    result = save_schedule_rows(cid, schedule, session)
 
-    return {
+    response = {
         "status": "allocated",
         "contract_id": cid,
         "allocations": allocations,
         "schedule": schedule,
     }
+
+    if result["preserved_adjustments"] > 0:
+        response["warnings"] = [
+            f"{result['preserved_adjustments']} posted adjustment row(s) were preserved and not overwritten by re-allocation."
+        ]
+
+    return response
