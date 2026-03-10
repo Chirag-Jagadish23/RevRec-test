@@ -6,8 +6,8 @@ from .routers import (
     fixed_assets,
     close,
     deal_desk,
-    graph,          # ✅ existing graph router
-    gl_posting,     # ✅ NEW
+    graph,          
+    gl_posting,     
     equity,
     commissions,
     intercompany,
@@ -21,6 +21,7 @@ from .routers import (
     costs,
     tax,
     forecast,
+    disclosure_pack,
 )
 
 app = FastAPI(title="AccrueSmart API")
@@ -41,9 +42,9 @@ app.add_middleware(
 
 app.include_router(contracts.router)
 app.include_router(deal_desk.router)
-app.include_router(graph.router)       # ✅
-app.include_router(close.router)       # ✅ NEW
-app.include_router(gl_posting.router)  # ✅ NEW
+app.include_router(graph.router)       
+app.include_router(close.router)       
+app.include_router(gl_posting.router)  
 app.include_router(fixed_assets.router)
 app.include_router(equity.router)
 app.include_router(commissions.router)
@@ -57,6 +58,7 @@ app.include_router(leases.router)
 app.include_router(costs.router)
 app.include_router(tax.router)
 app.include_router(forecast.router)
+app.include_router(disclosure_pack.router)
 
 @app.get("/")
 def root():

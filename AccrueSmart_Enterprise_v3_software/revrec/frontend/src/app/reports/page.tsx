@@ -30,8 +30,53 @@ type GridRow = {
 export default function ReportsPage() {
   const [contractId, setContractId] = useState("C-TEST");
   const [gridRows, setGridRows] = useState<GridRow[]>([]);
-  const [allocResult, setAllocResult] = useState<any>(null);
   const [loading, setLoading] = useState(false);
+
+  // Disclosure Package state
+  const [discFiscalYear, setDiscFiscalYear] = useState(new Date().getFullYear().toString());
+  const [discAsOfDate, setDiscAsOfDate] = useState(
+    new Date().toISOString().slice(0, 10)
+  );
+  const [discLoading, setDiscLoading] = useState(false);
+
+  async function generateDisclosurePack() {
+    const year = parseInt(discFiscalYear, 10);
+    if (!year || year < 2000 || year > 2100) {
+      toast.error("Enter a valid fiscal year (e.g. 2025)");
+      return;
+    }
+    if (!discAsOfDate) {
+      toast.error("Select an as-of date");
+      return;
+    }
+    try {
+      setDiscLoading(true);
+      const params = new URLSearchParams({
+        fiscal_year: year.toString(),
+        as_of_date: discAsOfDate,
+      });
+      // Fetch the PDF as a blob and trigger browser download
+      const res = await fetch(
+        `${process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000"}/reports/disclosure-pack?${params}`
+      );
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err?.detail || `Server error ${res.status}`);
+      }
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `ASC606_Disclosure_FY${year}_${discAsOfDate}.pdf`;
+      a.click();
+      URL.revokeObjectURL(url);
+      toast.success(`Disclosure package downloaded for FY ${year}`);
+    } catch (e: any) {
+      toast.error(e?.message || "Failed to generate disclosure package");
+    } finally {
+      setDiscLoading(false);
+    }
+  }
 
   async function loadFromGrid() {
     try {
@@ -45,7 +90,6 @@ export default function ReportsPage() {
       }
 
       setGridRows(rows);
-      setAllocResult(null);
       toast.success(`Loaded ${rows.length} schedule rows`);
     } catch (e: any) {
       console.error(e);
@@ -55,31 +99,6 @@ export default function ReportsPage() {
     }
   }
 
-  async function runAllocation() {
-    try {
-      setLoading(true);
-
-      // Your backend allocate route currently reads contract from DB
-      // so it only needs contract_id
-      const res = await api("/contracts/allocate", {
-        method: "POST",
-        body: JSON.stringify({ contract_id: contractId }),
-      });
-
-      setAllocResult(res);
-
-      // After allocation, reload the saved grid from backend (source of truth)
-      const rows = await api(`/schedules/grid/${encodeURIComponent(contractId)}`);
-      setGridRows(Array.isArray(rows) ? rows : []);
-
-      toast.success("Allocation complete");
-    } catch (e: any) {
-      console.error(e);
-      toast.error(e?.message || "Allocation failed");
-    } finally {
-      setLoading(false);
-    }
-  }
 
   const monthlyTotals = useMemo(() => {
     const byPeriod: Record<string, number> = {};
@@ -127,6 +146,48 @@ export default function ReportsPage() {
     <div className="max-w-6xl mx-auto p-6 space-y-6">
       <h1 className="text-2xl font-bold">Reports & Schedule Lock</h1>
 
+      {/* ── Disclosure Package ─────────────────────────────────── */}
+      <Card className="p-4 space-y-3 border-blue-200 bg-blue-50">
+        <div>
+          <h2 className="font-semibold text-blue-900">ASC 606 Disclosure Package</h2>
+          <p className="text-xs text-blue-700 mt-0.5">
+            Generates a PDF with revenue disaggregation, deferred revenue rollforward,
+            and remaining performance obligations (RPO).
+          </p>
+        </div>
+        <div className="flex flex-wrap gap-3 items-end">
+          <div className="space-y-1">
+            <label className="text-xs font-medium text-gray-600">Fiscal Year</label>
+            <Input
+              type="number"
+              className="w-28"
+              value={discFiscalYear}
+              onChange={(e: any) => setDiscFiscalYear(e.target.value)}
+              min={2000}
+              max={2100}
+              placeholder="2025"
+            />
+          </div>
+          <div className="space-y-1">
+            <label className="text-xs font-medium text-gray-600">As-of Date</label>
+            <Input
+              type="date"
+              className="w-40"
+              value={discAsOfDate}
+              onChange={(e: any) => setDiscAsOfDate(e.target.value)}
+            />
+          </div>
+          <Button
+            onClick={generateDisclosurePack}
+            disabled={discLoading}
+            className="bg-blue-700 hover:bg-blue-800 text-white"
+          >
+            {discLoading ? "Generating…" : "Generate Disclosure Package (PDF)"}
+          </Button>
+        </div>
+      </Card>
+
+      {/* ── Schedule section ───────────────────────────────────── */}
       <Card className="p-4 space-y-3">
         <h2 className="font-medium text-sm text-gray-700">Load Schedule Data</h2>
         <div className="flex flex-wrap gap-2 items-center">
@@ -138,9 +199,6 @@ export default function ReportsPage() {
           />
           <Button onClick={loadFromGrid} disabled={loading}>
             Load from Grid
-          </Button>
-          <Button onClick={runAllocation} disabled={loading}>
-            Run Allocation
           </Button>
         </div>
       </Card>
@@ -250,15 +308,7 @@ export default function ReportsPage() {
         </Card>
       )}
 
-      {/* Raw allocation debug */}
-      {allocResult && (
-        <Card className="p-4">
-          <h2 className="font-medium text-sm text-gray-700 mb-2">Full Allocation Result</h2>
-          <pre className="text-xs bg-slate-50 p-3 rounded border overflow-x-auto">
-            {JSON.stringify(allocResult, null, 2)}
-          </pre>
-        </Card>
-      )}
+
     </div>
   );
 }
