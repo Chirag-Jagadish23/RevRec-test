@@ -37,6 +37,7 @@ export default function ReportsPage() {
   const [discAsOfDate, setDiscAsOfDate] = useState(
     new Date().toISOString().slice(0, 10)
   );
+  const [discCompanyName, setDiscCompanyName] = useState("Your Company");
   const [discLoading, setDiscLoading] = useState(false);
 
   async function generateDisclosurePack() {
@@ -54,6 +55,7 @@ export default function ReportsPage() {
       const params = new URLSearchParams({
         fiscal_year: year.toString(),
         as_of_date: discAsOfDate,
+        company_name: discCompanyName || "Your Company",
       });
       // Fetch the PDF as a blob and trigger browser download
       const res = await fetch(
@@ -151,11 +153,22 @@ export default function ReportsPage() {
         <div>
           <h2 className="font-semibold text-blue-900">ASC 606 Disclosure Package</h2>
           <p className="text-xs text-blue-700 mt-0.5">
-            Generates a PDF with revenue disaggregation, deferred revenue rollforward,
-            and remaining performance obligations (RPO).
+            Generates a 16-section enterprise PDF: executive summary, revenue disaggregation,
+            deferred revenue rollforward, RPO schedules, revenue waterfall, risk indicators,
+            AI commentary, audit workpapers, and more.
           </p>
         </div>
         <div className="flex flex-wrap gap-3 items-end">
+          <div className="space-y-1">
+            <label className="text-xs font-medium text-gray-600">Company Name</label>
+            <Input
+              type="text"
+              className="w-44"
+              value={discCompanyName}
+              onChange={(e: any) => setDiscCompanyName(e.target.value)}
+              placeholder="Your Company"
+            />
+          </div>
           <div className="space-y-1">
             <label className="text-xs font-medium text-gray-600">Fiscal Year</label>
             <Input
@@ -165,7 +178,7 @@ export default function ReportsPage() {
               onChange={(e: any) => setDiscFiscalYear(e.target.value)}
               min={2000}
               max={2100}
-              placeholder="2025"
+              placeholder="2026"
             />
           </div>
           <div className="space-y-1">
