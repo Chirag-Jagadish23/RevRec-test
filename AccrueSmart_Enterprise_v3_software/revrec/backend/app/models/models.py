@@ -1,6 +1,6 @@
 from sqlmodel import SQLModel, Field, Relationship
 from typing import Optional, List
-from datetime import date
+from datetime import date, datetime
 
 
 # -------------------------------------------------------------
@@ -101,3 +101,29 @@ class ScheduleRow(SQLModel, table=True):
 
     # Optional link to another row (future use for explicit row-to-row traceability)
     reference_row_id: Optional[int] = Field(default=None, index=True)
+
+
+# -------------------------------------------------------------
+# MILESTONES (for milestone rule_type revenue recognition)
+# -------------------------------------------------------------
+class Milestone(SQLModel, table=True):
+    __tablename__ = "milestones"
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    contract_id: str = Field(foreign_key="contracts.contract_id", index=True)
+    product_code: str = Field(index=True)
+
+    # Date when the milestone is achieved / revenue recognized (YYYY-MM-DD)
+    milestone_date: str
+
+    # Amount to recognize when this milestone is locked
+    amount: float
+
+    # Human-readable description of the milestone event
+    description: Optional[str] = None
+
+    # Whether this milestone has been confirmed/locked by the user
+    is_locked: bool = Field(default=False)
+
+    # ISO datetime string of when it was locked
+    locked_at: Optional[str] = None

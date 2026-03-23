@@ -1,6 +1,6 @@
 from datetime import date
-from sqlmodel import Session
-from ..models.models import Product
+from sqlmodel import Session, select
+from ..models.models import Product, Milestone
 
 
 def generate_month_list(start: date, end: date):
@@ -16,6 +16,7 @@ def generate_month_list(start: date, end: date):
             y += 1
     return months
 
+
 def build_schedule(contract, allocations, session: Session):
     periods = generate_month_list(contract.start_date, contract.end_date)
     schedule_rows = []
@@ -23,6 +24,34 @@ def build_schedule(contract, allocations, session: Session):
     for alloc in allocations:
         product = session.get(Product, alloc["product_code"])
 
+        # --- MILESTONE rule: one row per locked milestone ---
+        if alloc["rule_type"] == "milestone":
+            locked = session.exec(
+                select(Milestone).where(
+                    Milestone.contract_id == contract.contract_id,
+                    Milestone.product_code == alloc["product_code"],
+                    Milestone.is_locked == True,
+                )
+            ).all()
+
+            for m in locked:
+                # Derive YYYY-MM period from the milestone date
+                period = m.milestone_date[:7]
+                schedule_rows.append({
+                    "period": period,
+                    "product_code": alloc["product_code"],
+                    "product_name": product.name if product else None,
+                    "ssp": product.ssp if product else None,
+                    "revrec_code": alloc["revrec_code"],
+                    "rule_type": "milestone",
+                    "allocated_total": alloc["allocated_total"],
+                    "monthly_amount": 0,
+                    "amount": m.amount,
+                    "source": "milestone",
+                })
+            continue  # skip the period loop for milestone lines
+
+        # --- STRAIGHT_LINE and IMMEDIATE rules ---
         last_idx = len(periods) - 1
         for i, p in enumerate(periods):
             amount = (
@@ -45,7 +74,7 @@ def build_schedule(contract, allocations, session: Session):
                 "allocated_total": alloc["allocated_total"],
                 "monthly_amount": alloc["monthly_amount"],
                 "amount": amount,
-                "source": alloc["rule_type"],  # <-- important
+                "source": alloc["rule_type"],
             })
 
     return schedule_rows

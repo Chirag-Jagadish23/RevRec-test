@@ -9,6 +9,23 @@ import { toast } from "sonner";
 
 type LineItem = { product_code: string; amount: number };
 
+type Milestone = {
+  id: number;
+  contract_id: string;
+  product_code: string;
+  milestone_date: string;
+  amount: number;
+  description: string;
+  is_locked: boolean;
+  locked_at: string | null;
+};
+
+type NewMilestoneForm = {
+  milestone_date: string;
+  amount: number;
+  description: string;
+};
+
 type CatalogProduct = {
   product_code: string;
   name: string;
@@ -60,6 +77,11 @@ export default function ContractsPage() {
 
   const [allocResult, setAllocResult] = useState<any>(null);
   const [scheduleGrid, setScheduleGrid] = useState<ScheduleGridRow[]>([]);
+
+  // milestones: keyed by product_code
+  const [milestones, setMilestones] = useState<Record<string, Milestone[]>>({});
+  // new milestone forms: keyed by product_code
+  const [newMilestoneForms, setNewMilestoneForms] = useState<Record<string, NewMilestoneForm>>({});
 
   // -----------------------------
   // Maps / derived data
@@ -165,6 +187,7 @@ export default function ContractsPage() {
   useEffect(() => {
     loadContract();
     reloadSchedule();
+    loadMilestones(contract_id);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [contract_id]);
 
@@ -208,6 +231,87 @@ export default function ContractsPage() {
     } catch {
       setScheduleGrid([]);
     }
+  }
+
+  async function loadMilestones(cid: string) {
+    try {
+      const res = await api(`/milestones/${encodeURIComponent(cid)}`);
+      const list: Milestone[] = Array.isArray(res) ? res : [];
+      const grouped: Record<string, Milestone[]> = {};
+      for (const m of list) {
+        if (!grouped[m.product_code]) grouped[m.product_code] = [];
+        grouped[m.product_code].push(m);
+      }
+      setMilestones(grouped);
+    } catch {
+      setMilestones({});
+    }
+  }
+
+  async function addMilestone(product_code: string) {
+    const form = newMilestoneForms[product_code];
+    if (!form?.milestone_date || !form?.amount) {
+      toast.error("Date and amount are required");
+      return;
+    }
+    try {
+      await api("/milestones", {
+        method: "POST",
+        body: JSON.stringify({
+          contract_id,
+          product_code,
+          milestone_date: form.milestone_date,
+          amount: Number(form.amount),
+          description: form.description || "",
+        }),
+      });
+      // clear this product's form
+      setNewMilestoneForms((prev) => ({ ...prev, [product_code]: { milestone_date: "", amount: 0, description: "" } }));
+      await loadMilestones(contract_id);
+      toast.success("Milestone added");
+    } catch {
+      toast.error("Failed to add milestone");
+    }
+  }
+
+  async function lockMilestone(id: number) {
+    try {
+      await api(`/milestones/${id}/lock`, { method: "PATCH" });
+      await loadMilestones(contract_id);
+      toast.success("Milestone locked — re-allocate to generate schedule row");
+    } catch {
+      toast.error("Failed to lock milestone");
+    }
+  }
+
+  async function unlockMilestone(id: number) {
+    try {
+      await api(`/milestones/${id}/unlock`, { method: "PATCH" });
+      await loadMilestones(contract_id);
+      toast.success("Milestone unlocked");
+    } catch {
+      toast.error("Failed to unlock milestone");
+    }
+  }
+
+  async function deleteMilestone(id: number) {
+    try {
+      await api(`/milestones/${id}`, { method: "DELETE" });
+      await loadMilestones(contract_id);
+      toast.success("Milestone deleted");
+    } catch (e: any) {
+      toast.error(e?.message || "Failed to delete milestone");
+    }
+  }
+
+  function updateMilestoneForm(product_code: string, field: keyof NewMilestoneForm, value: string) {
+    setNewMilestoneForms((prev) => ({
+      ...prev,
+      [product_code]: {
+        ...prev[product_code],
+        [field]: field === "amount" ? parseFloat(value || "0") : value,
+      },
+    }));
   }
 
   // -----------------------------
@@ -364,6 +468,17 @@ export default function ContractsPage() {
 
         {items.map((item, idx) => {
           const p = catalogMap[item.product_code];
+          const enriched = lineEnriched[idx];
+          const isMilestone = enriched?.rule_type === "milestone";
+          const productMilestones = milestones[item.product_code] || [];
+          const form = newMilestoneForms[item.product_code] || { milestone_date: "", amount: 0, description: "" };
+
+          const backendAlloc = backendAllocations.find(a => a.product_code === item.product_code);
+          const allocatedTotal = backendAlloc?.allocated_total ?? sspAllocationPreview[idx]?.alloc_preview ?? 0;
+          const milestoneTotal = productMilestones.reduce((s, m) => s + Number(m.amount), 0);
+          const milestoneDiff = allocatedTotal - milestoneTotal;
+          const showCoverageWarning = isMilestone && allocatedTotal > 0 && Math.abs(milestoneDiff) > 0.01;
+
           return (
             <div key={idx} className="border rounded-md p-3 space-y-2">
               <div className="grid grid-cols-1 md:grid-cols-4 gap-2">
@@ -403,6 +518,104 @@ export default function ContractsPage() {
                   <span>{getRulePreview(item.product_code)}</span>
                 </div>
               </div>
+
+              {/* Milestone management — only shown for milestone rule_type */}
+              {isMilestone && (
+                <div className="border border-amber-200 rounded-md p-3 bg-amber-50 space-y-3 mt-2">
+                  <div className="flex items-center justify-between">
+                    <div className="text-xs font-semibold text-amber-800">Milestones</div>
+                    {allocatedTotal > 0 && (
+                      <div className="text-xs text-gray-600">
+                        Allocated: <span className="font-medium">${Number(allocatedTotal).toLocaleString(undefined, { maximumFractionDigits: 2 })}</span>
+                        {" · "}Milestones total: <span className="font-medium">${milestoneTotal.toLocaleString(undefined, { maximumFractionDigits: 2 })}</span>
+                      </div>
+                    )}
+                  </div>
+
+                  {showCoverageWarning && (
+                    <div className={`text-xs rounded px-2 py-1 ${milestoneDiff > 0 ? "bg-yellow-100 text-yellow-800 border border-yellow-300" : "bg-red-100 text-red-800 border border-red-300"}`}>
+                      {milestoneDiff > 0
+                        ? `$${milestoneDiff.toFixed(2)} of allocated revenue is not covered by any milestone — add more milestones or increase amounts.`
+                        : `Milestones exceed allocated revenue by $${Math.abs(milestoneDiff).toFixed(2)} — reduce milestone amounts.`
+                      }
+                    </div>
+                  )}
+
+                  {/* Existing milestones */}
+                  {productMilestones.length > 0 && (
+                    <table className="min-w-full text-xs">
+                      <thead>
+                        <tr className="border-b border-amber-200">
+                          <th className="p-1 text-left">Date</th>
+                          <th className="p-1 text-left">Description</th>
+                          <th className="p-1 text-right">Amount</th>
+                          <th className="p-1 text-center">Status</th>
+                          <th className="p-1 text-center">Actions</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {productMilestones.map((m) => (
+                          <tr key={m.id} className="border-b border-amber-100">
+                            <td className="p-1">{m.milestone_date}</td>
+                            <td className="p-1 text-gray-600">{m.description || "-"}</td>
+                            <td className="p-1 text-right">${Number(m.amount).toLocaleString()}</td>
+                            <td className="p-1 text-center">
+                              {m.is_locked ? (
+                                <span className="text-green-700 font-semibold">Locked</span>
+                              ) : (
+                                <span className="text-gray-500">Pending</span>
+                              )}
+                            </td>
+                            <td className="p-1 text-center flex gap-1 justify-center">
+                              {m.is_locked ? (
+                                <Button size="sm" variant="outline" onClick={() => unlockMilestone(m.id)}>
+                                  Unlock
+                                </Button>
+                              ) : (
+                                <Button size="sm" onClick={() => lockMilestone(m.id)}>
+                                  Lock
+                                </Button>
+                              )}
+                              {!m.is_locked && (
+                                <Button size="sm" variant="destructive" onClick={() => deleteMilestone(m.id)}>
+                                  Delete
+                                </Button>
+                              )}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  )}
+
+                  {/* Add new milestone form */}
+                  <div className="grid grid-cols-1 md:grid-cols-4 gap-2 items-end">
+                    <Input
+                      type="date"
+                      value={form.milestone_date}
+                      onChange={(e) => updateMilestoneForm(item.product_code, "milestone_date", e.target.value)}
+                      placeholder="Milestone date"
+                    />
+                    <Input
+                      type="number"
+                      value={form.amount || ""}
+                      onChange={(e) => updateMilestoneForm(item.product_code, "amount", e.target.value)}
+                      placeholder="Amount"
+                    />
+                    <Input
+                      value={form.description}
+                      onChange={(e) => updateMilestoneForm(item.product_code, "description", e.target.value)}
+                      placeholder="Description (optional)"
+                    />
+                    <Button variant="outline" onClick={() => addMilestone(item.product_code)}>
+                      + Add Milestone
+                    </Button>
+                  </div>
+                  <div className="text-xs text-amber-700">
+                    Lock a milestone to recognize revenue. Then click <span className="font-medium">Allocate Revenue</span> to generate the schedule row.
+                  </div>
+                </div>
+              )}
             </div>
           );
         })}

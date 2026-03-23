@@ -112,6 +112,7 @@ export default function RevRecCodesPage() {
           >
             <option value="straight_line">straight_line</option>
             <option value="immediate">immediate</option>
+            <option value="milestone">milestone</option>
           </select>
           <Button onClick={add}>Add RevRec Code</Button>
         </div>

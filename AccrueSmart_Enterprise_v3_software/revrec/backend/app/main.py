@@ -6,8 +6,8 @@ from .routers import (
     fixed_assets,
     close,
     deal_desk,
-    graph,          
-    gl_posting,     
+    graph,
+    gl_posting,
     equity,
     commissions,
     intercompany,
@@ -22,6 +22,7 @@ from .routers import (
     tax,
     forecast,
     disclosure_pack,
+    milestones,
 )
 
 app = FastAPI(title="AccrueSmart API")
@@ -59,6 +60,7 @@ app.include_router(costs.router)
 app.include_router(tax.router)
 app.include_router(forecast.router)
 app.include_router(disclosure_pack.router)
+app.include_router(milestones.router)
 
 @app.get("/")
 def root():
