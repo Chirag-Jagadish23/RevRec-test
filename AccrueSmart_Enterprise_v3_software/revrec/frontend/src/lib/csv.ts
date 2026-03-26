@@ -66,7 +66,7 @@ export function parseTempDiffCsv(
     requireRowVAPct?: boolean;
     defaultVaPct?: number;
   }
-): CSVParseResult<Array<Record<string, any>>> {
+): CSVParseResult<Record<string, any>> {
   const requireLabel = options?.requireLabel ?? true;
   const requireRowVAPct = options?.requireRowVAPct ?? false;
   const defaultVaPct = options?.defaultVaPct ?? 0;
