@@ -32,6 +32,7 @@ type EndpointStatus = "idle" | "loading" | "ok" | "error";
 
 export default function AuditorPage() {
   const [contracts, setContracts] = useState<ContractOption[]>([]);
+  const [contractSearch, setContractSearch] = useState("");
   const [selectedContractId, setSelectedContractId] = useState("");
   const [selectedContractName, setSelectedContractName] = useState("");
 
@@ -58,7 +59,7 @@ export default function AuditorPage() {
     (async () => {
       setStatuses((s) => ({ ...s, contracts: "loading" }));
       try {
-        const res = await api("/contracts", { method: "GET" });
+        const res = await api("/contracts?limit=100", { method: "GET" });
 
         const rawRows = Array.isArray(res)
           ? res
@@ -311,6 +312,12 @@ export default function AuditorPage() {
         <div className="grid grid-cols-1 md:grid-cols-3 gap-3 items-end">
           <div className="space-y-1">
             <div className="text-xs text-gray-500">Contract</div>
+            <input
+              className="w-full border rounded px-2 py-1 text-xs mb-1"
+              placeholder="Filter by name or ID…"
+              value={contractSearch}
+              onChange={(e) => setContractSearch(e.target.value)}
+            />
             <select
               className="w-full border rounded px-2 py-2 text-sm bg-white"
               value={selectedContractId}
@@ -324,11 +331,16 @@ export default function AuditorPage() {
               {contracts.length === 0 ? (
                 <option value="">No contracts found</option>
               ) : (
-                contracts.map((c) => (
-                  <option key={c.id} value={c.id}>
-                    {c.name} ({c.id})
-                  </option>
-                ))
+                contracts
+                  .filter((c) => {
+                    const q = contractSearch.toLowerCase();
+                    return !q || c.id.toLowerCase().includes(q) || c.name.toLowerCase().includes(q);
+                  })
+                  .map((c) => (
+                    <option key={c.id} value={c.id}>
+                      {c.name} ({c.id})
+                    </option>
+                  ))
               )}
             </select>
           </div>

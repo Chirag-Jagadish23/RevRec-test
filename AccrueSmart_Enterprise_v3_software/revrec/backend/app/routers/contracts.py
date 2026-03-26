@@ -1,6 +1,7 @@
 # backend/app/routers/contracts.py
 import json
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
+from typing import Optional
 from datetime import datetime
 from sqlmodel import Session, select
 from sqlalchemy import delete
@@ -23,38 +24,48 @@ def parse_date(d: str):
         raise HTTPException(400, f"Invalid date format: {d}")
 
 
-# ---------------- LIST CONTRACTS (NEW) ----------------
+# ---------------- LIST CONTRACTS ----------------
 @router.get("")
 @require(perms=["contracts.view"])
-def list_contracts(session: Session = Depends(get_session)):
+def list_contracts(
+    session: Session = Depends(get_session),
+    limit: int = Query(50, ge=1, le=500),
+    offset: int = Query(0, ge=0),
+    search: Optional[str] = Query(None, description="Filter by contract ID or customer name"),
+):
     """
-    Returns a lightweight list for dropdowns / auditor page.
-    Stable keys:
-      - contract_id
-      - contract_name (fallback to customer if no explicit name field)
-      - customer
+    Paginated contract list for dropdowns and search.
+    Returns {items, total, limit, offset}.
     """
-    rows = session.exec(select(ContractRecord)).all()
+    query = select(ContractRecord)
 
-    result = []
-    for c in rows:
-        # If your model later adds contract_name, this will use it automatically.
-        contract_name = getattr(c, "contract_name", None) or c.customer or c.contract_id
-
-        result.append(
-            {
-                "contract_id": c.contract_id,
-                "contract_name": contract_name,
-                "customer": c.customer,
-                "transaction_price": float(c.transaction_price or 0),
-                "start_date": c.start_date.isoformat() if c.start_date else None,
-                "end_date": c.end_date.isoformat() if c.end_date else None,
-            }
+    if search:
+        term = f"%{search}%"
+        query = query.where(
+            (ContractRecord.contract_id.like(term)) |
+            (ContractRecord.customer.like(term))
         )
 
-    # Optional: sort newest-ish by ID (or replace with created_at later)
-    result.sort(key=lambda x: str(x["contract_id"]))
-    return result
+    all_matching = session.exec(query).all()
+    total = len(all_matching)
+
+    # Sort by contract_id, then paginate
+    all_matching.sort(key=lambda c: str(c.contract_id))
+    page = all_matching[offset: offset + limit]
+
+    items = [
+        {
+            "contract_id": c.contract_id,
+            "contract_name": getattr(c, "contract_name", None) or c.customer or c.contract_id,
+            "customer": c.customer,
+            "transaction_price": float(c.transaction_price or 0),
+            "start_date": c.start_date.isoformat() if c.start_date else None,
+            "end_date": c.end_date.isoformat() if c.end_date else None,
+        }
+        for c in page
+    ]
+
+    return {"items": items, "total": total, "limit": limit, "offset": offset}
 
 
 # ---------------- GET CONTRACT ----------------

@@ -94,6 +94,12 @@ export default function ContractsPage() {
   // new milestone forms: keyed by product_code
   const [newMilestoneForms, setNewMilestoneForms] = useState<Record<string, NewMilestoneForm>>({});
 
+  // --- Contract search ---
+  const [searchQuery, setSearchQuery] = useState("");
+  const [searchResults, setSearchResults] = useState<{ contract_id: string; customer: string; transaction_price: number }[]>([]);
+  const [searchTotal, setSearchTotal] = useState(0);
+  const [showSearchResults, setShowSearchResults] = useState(false);
+
   // --- Amendment state ---
   const [isExistingContract, setIsExistingContract] = useState(false);
   const [showAmendModal, setShowAmendModal] = useState(false);
@@ -213,6 +219,31 @@ export default function ContractsPage() {
     loadMilestones(contract_id);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [contract_id]);
+
+  async function searchContracts(q: string) {
+    setSearchQuery(q);
+    if (!q.trim()) {
+      setSearchResults([]);
+      setSearchTotal(0);
+      setShowSearchResults(false);
+      return;
+    }
+    try {
+      const res = await api(`/contracts?search=${encodeURIComponent(q)}&limit=10`);
+      setSearchResults(res.items || []);
+      setSearchTotal(res.total || 0);
+      setShowSearchResults(true);
+    } catch {
+      setSearchResults([]);
+    }
+  }
+
+  function selectContract(cid: string) {
+    setContractId(cid);
+    setSearchQuery("");
+    setSearchResults([]);
+    setShowSearchResults(false);
+  }
 
   async function loadReferenceData() {
     try {
@@ -476,6 +507,47 @@ export default function ContractsPage() {
   return (
     <div className="p-6 max-w-7xl mx-auto space-y-6">
       <h1 className="text-2xl font-bold">Contracts</h1>
+
+      {/* Contract search */}
+      <Card className="p-4 space-y-2">
+        <h2 className="font-medium text-sm text-gray-700">Find Existing Contract</h2>
+        <div className="relative">
+          <Input
+            placeholder="Search by contract ID or customer name…"
+            value={searchQuery}
+            onChange={(e) => searchContracts(e.target.value)}
+            onBlur={() => setTimeout(() => setShowSearchResults(false), 150)}
+          />
+          {showSearchResults && (
+            <div className="absolute z-10 mt-1 w-full bg-white border rounded-md shadow-lg max-h-56 overflow-y-auto">
+              {searchResults.length === 0 ? (
+                <div className="px-3 py-2 text-sm text-gray-500">No contracts found</div>
+              ) : (
+                <>
+                  {searchResults.map((c) => (
+                    <button
+                      key={c.contract_id}
+                      className="w-full text-left px-3 py-2 text-sm hover:bg-blue-50 flex justify-between items-center"
+                      onMouseDown={() => selectContract(c.contract_id)}
+                    >
+                      <span>
+                        <span className="font-medium">{c.contract_id}</span>
+                        <span className="text-gray-500 ml-2">{c.customer}</span>
+                      </span>
+                      <span className="text-gray-400 text-xs">${Number(c.transaction_price).toLocaleString()}</span>
+                    </button>
+                  ))}
+                  {searchTotal > searchResults.length && (
+                    <div className="px-3 py-1 text-xs text-gray-400 border-t">
+                      Showing {searchResults.length} of {searchTotal} results — refine your search
+                    </div>
+                  )}
+                </>
+              )}
+            </div>
+          )}
+        </div>
+      </Card>
 
       <Card className="p-4 space-y-3">
         <h2 className="font-medium text-sm text-gray-700">Contract Details</h2>
