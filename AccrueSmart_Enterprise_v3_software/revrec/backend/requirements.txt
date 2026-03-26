@@ -8,13 +8,8 @@ matplotlib
 reportlab
 pdfminer.six
 openpyxl
-sqlmodel>=0.0.14 # Added for database models and interactions
-psycopg2-binary>=2.9  # PostgreSQL driver for Supabase
-# openai>=1.0.0  # Optional - for OpenAI integration
-# anthropic>=0.7.0  # Optional - for Anthropic integration
-
-# python-jose # For JWT handling, if needed for authentication
-# httpx # For making HTTP requests, if needed for API calls to OpenAI or Anthropic
-# supabase # For interacting with Supabase database and services
-# redis # For caching and session management, if needed
-# python-dotenv # For loading environment variables from a .env file, if used for configuration management
+sqlmodel>=0.0.14
+psycopg2-binary>=2.9
+python-dotenv
+supabase
+openai>=1.0.0
