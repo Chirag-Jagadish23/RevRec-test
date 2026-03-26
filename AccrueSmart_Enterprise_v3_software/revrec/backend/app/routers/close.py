@@ -11,15 +11,7 @@ from sqlmodel import Session, select
 from ..db import get_session
 from ..models.models import CloseTaskOverride
 from ..services.close_orchestrator import build_close_dashboard, generate_close_package
-
-try:
-    from ..auth import require
-except Exception:
-    # Dev-safe fallback
-    def require(perms=None):
-        def _decorator(fn):
-            return fn
-        return _decorator
+from ..deps.auth import get_current_user
 
 
 router = APIRouter(prefix="/close", tags=["close"])
@@ -31,11 +23,11 @@ class ClosePackageGenerateIn(BaseModel):
 
 
 @router.get("/dashboard")
-@require(perms=["reports.memo"])
 def close_dashboard(
     period_key: str = Query(..., description="Example: 2026-01"),
     entity_id: str = Query("US_PARENT"),
     session: Session = Depends(get_session),
+    user: dict = Depends(get_current_user),
 ):
     try:
         return build_close_dashboard(session=session, period_key=period_key, entity_id=entity_id)
@@ -44,8 +36,11 @@ def close_dashboard(
 
 
 @router.post("/package/generate")
-@require(perms=["reports.memo"])
-def close_package_generate(payload: ClosePackageGenerateIn, session: Session = Depends(get_session)):
+def close_package_generate(
+    payload: ClosePackageGenerateIn,
+    session: Session = Depends(get_session),
+    user: dict = Depends(get_current_user),
+):
     try:
         data = payload.model_dump() if hasattr(payload, "model_dump") else payload.dict()
         return generate_close_package(

@@ -46,7 +46,7 @@ def _extract_scalar(row: Any, default: Any = 0) -> Any:
 
 
 def _table_exists(session: Session, table_name: str) -> bool:
-    q = text("SELECT name FROM sqlite_master WHERE type='table' AND name=:t")
+    q = text("SELECT tablename FROM pg_tables WHERE schemaname='public' AND tablename=:t")
     row = session.exec(q, params={"t": table_name}).first()
     return bool(_extract_scalar(row, None))
 
