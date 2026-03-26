@@ -127,3 +127,32 @@ class Milestone(SQLModel, table=True):
 
     # ISO datetime string of when it was locked
     locked_at: Optional[str] = None
+
+
+# -------------------------------------------------------------
+# CONTRACT MODIFICATIONS (ASC 606 amendment history)
+# -------------------------------------------------------------
+class ContractModification(SQLModel, table=True):
+    __tablename__ = "contract_modifications"
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    contract_id: str = Field(foreign_key="contracts.contract_id", index=True)
+
+    # ISO datetime when the amendment was recorded
+    modified_at: str
+
+    # "price_change" | "add_product" | "remove_product" | "other"
+    change_type: str = Field(default="other")
+
+    # "prospective" | "cumulative_catch_up"
+    treatment: str = Field(default="prospective")
+
+    # YYYY-MM-DD — the date from which new terms apply
+    effective_date: str
+
+    # Full JSON snapshots of {header, lines} before and after the change
+    snapshot_before: str
+    snapshot_after: str
+
+    # Optional human-readable description of what changed and why
+    notes: Optional[str] = None

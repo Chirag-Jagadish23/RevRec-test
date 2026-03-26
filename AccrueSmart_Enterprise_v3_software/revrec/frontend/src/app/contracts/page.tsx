@@ -60,6 +60,17 @@ type ScheduleGridRow = {
   rule_type?: string;
 };
 
+type ContractModificationRecord = {
+  id: number;
+  modified_at: string;
+  change_type: string;
+  treatment: string;
+  effective_date: string;
+  notes: string | null;
+  snapshot_before: { header: any; lines: any[] };
+  snapshot_after: { header: any; lines: any[] };
+};
+
 export default function ContractsPage() {
   const [contract_id, setContractId] = useState("C-TEST");
   const [customer, setCustomer] = useState("DemoCo");
@@ -82,6 +93,18 @@ export default function ContractsPage() {
   const [milestones, setMilestones] = useState<Record<string, Milestone[]>>({});
   // new milestone forms: keyed by product_code
   const [newMilestoneForms, setNewMilestoneForms] = useState<Record<string, NewMilestoneForm>>({});
+
+  // --- Amendment state ---
+  const [isExistingContract, setIsExistingContract] = useState(false);
+  const [showAmendModal, setShowAmendModal] = useState(false);
+  const [amendEffectiveDate, setAmendEffectiveDate] = useState(new Date().toISOString().split("T")[0]);
+  const [amendTreatment, setAmendTreatment] = useState<"prospective" | "cumulative_catch_up">("prospective");
+  const [amendChangeType, setAmendChangeType] = useState("other");
+  const [amendNotes, setAmendNotes] = useState("");
+  const [amendSaving, setAmendSaving] = useState(false);
+  // Set after a successful amendment; passed to next Allocate Revenue call
+  const [pendingAmendment, setPendingAmendment] = useState<{ effective_date: string; treatment: string } | null>(null);
+  const [modifications, setModifications] = useState<ContractModificationRecord[]>([]);
 
   // -----------------------------
   // Maps / derived data
@@ -219,8 +242,58 @@ export default function ContractsPage() {
           amount: Number(l.amount || 0),
         }))
       );
+
+      // Contract exists in DB — enable amendment workflow
+      setIsExistingContract(true);
+      setPendingAmendment(null);
+      await loadModifications(contract_id);
     } catch {
       // fine if contract not saved yet
+      setIsExistingContract(false);
+      setModifications([]);
+    }
+  }
+
+  async function loadModifications(cid: string) {
+    try {
+      const res = await api(`/contracts/${encodeURIComponent(cid)}/modifications`);
+      setModifications(Array.isArray(res) ? res : []);
+    } catch {
+      setModifications([]);
+    }
+  }
+
+  async function submitAmendment() {
+    if (!amendEffectiveDate) {
+      toast.error("Effective date is required");
+      return;
+    }
+    setAmendSaving(true);
+    try {
+      const res = await api(`/contracts/${encodeURIComponent(contract_id)}/modify`, {
+        method: "POST",
+        body: JSON.stringify({
+          customer,
+          transaction_price: Number(transaction_price || 0),
+          start_date: startDate,
+          end_date: endDate,
+          lines: items.map((i) => ({ product_code: i.product_code, amount: Number(i.amount || 0) })),
+          effective_date: amendEffectiveDate,
+          treatment: amendTreatment,
+          change_type: amendChangeType,
+          notes: amendNotes || null,
+        }),
+      });
+
+      setShowAmendModal(false);
+      setPendingAmendment({ effective_date: amendEffectiveDate, treatment: amendTreatment });
+      await loadModifications(contract_id);
+      toast.success(`Amendment recorded (ID: ${res.modification_id}). Re-allocate to apply.`);
+    } catch (e) {
+      console.error(e);
+      toast.error("Failed to save amendment");
+    } finally {
+      setAmendSaving(false);
     }
   }
 
@@ -343,16 +416,27 @@ export default function ContractsPage() {
 
   async function allocate() {
     try {
+      const body: any = { contract_id };
+      if (pendingAmendment) {
+        body.effective_date = pendingAmendment.effective_date;
+        body.treatment = pendingAmendment.treatment;
+      }
+
       const res = await api("/contracts/allocate", {
         method: "POST",
-        body: JSON.stringify({ contract_id }),
+        body: JSON.stringify(body),
       });
 
       setAllocResult(res);
+      setPendingAmendment(null); // amendment has been applied
       await reloadSchedule();
       await loadReferenceData();
 
-      toast.success("Allocation complete");
+      if (res.warnings?.length) {
+        res.warnings.forEach((w: string) => toast.message(w));
+      } else {
+        toast.success("Allocation complete");
+      }
     } catch (e) {
       console.error(e);
       toast.error("Allocation failed");
@@ -666,11 +750,33 @@ export default function ContractsPage() {
         </div>
       </Card>
 
+      {/* Pending amendment banner */}
+      {pendingAmendment && (
+        <div className="rounded-md border border-blue-300 bg-blue-50 px-4 py-3 text-sm text-blue-800">
+          <span className="font-semibold">Amendment pending:</span>{" "}
+          {pendingAmendment.treatment === "prospective"
+            ? `Prospective — new terms will apply from ${pendingAmendment.effective_date} forward.`
+            : `Cumulative catch-up — a delta row will be posted to ${pendingAmendment.effective_date.slice(0, 7)} and full schedule restated.`}
+          {" "}Click <span className="font-medium">Allocate Revenue</span> to apply.
+          <button
+            className="ml-3 text-blue-600 underline text-xs"
+            onClick={() => setPendingAmendment(null)}
+          >
+            Dismiss
+          </button>
+        </div>
+      )}
+
       {/* Actions */}
       <div className="flex flex-wrap gap-2">
         <Button variant="secondary" onClick={saveContract}>
           Save Contract
         </Button>
+        {isExistingContract && (
+          <Button variant="outline" onClick={() => setShowAmendModal(true)}>
+            Save as Amendment
+          </Button>
+        )}
         <Button onClick={allocate}>Allocate Revenue</Button>
         <Button variant="secondary" onClick={aiGenerate}>
           AI Build Schedule
@@ -799,6 +905,47 @@ export default function ContractsPage() {
         </Card>
       )}
 
+      {/* Amendment history */}
+      {modifications.length > 0 && (
+        <Card className="p-4 space-y-3">
+          <h2 className="font-medium text-sm text-gray-700">Amendment History ({modifications.length})</h2>
+          <div className="overflow-x-auto">
+            <table className="min-w-full text-xs">
+              <thead>
+                <tr className="border-b bg-gray-50">
+                  <th className="p-2 text-left">#</th>
+                  <th className="p-2 text-left">Date Recorded</th>
+                  <th className="p-2 text-left">Effective Date</th>
+                  <th className="p-2 text-left">Change Type</th>
+                  <th className="p-2 text-left">Treatment</th>
+                  <th className="p-2 text-left">Notes</th>
+                  <th className="p-2 text-right">Txn Price Before</th>
+                  <th className="p-2 text-right">Txn Price After</th>
+                </tr>
+              </thead>
+              <tbody>
+                {modifications.map((m) => (
+                  <tr key={m.id} className="border-b">
+                    <td className="p-2">{m.id}</td>
+                    <td className="p-2">{m.modified_at.slice(0, 16).replace("T", " ")}</td>
+                    <td className="p-2 font-medium">{m.effective_date}</td>
+                    <td className="p-2">{m.change_type}</td>
+                    <td className="p-2">
+                      <span className={`px-1 rounded text-xs ${m.treatment === "prospective" ? "bg-blue-100 text-blue-800" : "bg-purple-100 text-purple-800"}`}>
+                        {m.treatment}
+                      </span>
+                    </td>
+                    <td className="p-2 text-gray-600">{m.notes || "-"}</td>
+                    <td className="p-2 text-right">${Number(m.snapshot_before.header.transaction_price).toLocaleString()}</td>
+                    <td className="p-2 text-right">${Number(m.snapshot_after.header.transaction_price).toLocaleString()}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </Card>
+      )}
+
       {/* Raw JSON */}
       {allocResult && (
         <Card className="p-4">
@@ -807,6 +954,78 @@ export default function ContractsPage() {
             {JSON.stringify(allocResult, null, 2)}
           </pre>
         </Card>
+      )}
+
+      {/* Amendment modal */}
+      {showAmendModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
+          <div className="bg-white rounded-lg shadow-xl p-6 w-full max-w-lg space-y-4">
+            <h2 className="text-lg font-semibold">Record Contract Amendment</h2>
+            <p className="text-sm text-gray-600">
+              This will save the current form values as an amendment and record a full before/after snapshot.
+              You can then re-allocate to apply the new terms.
+            </p>
+
+            <div className="space-y-3">
+              <div>
+                <label className="text-xs font-medium text-gray-700 block mb-1">Effective Date <span className="text-red-500">*</span></label>
+                <input
+                  type="date"
+                  className="border rounded px-3 py-2 text-sm w-full"
+                  value={amendEffectiveDate}
+                  onChange={(e) => setAmendEffectiveDate(e.target.value)}
+                />
+                <p className="text-xs text-gray-500 mt-1">The date from which the new contract terms apply.</p>
+              </div>
+
+              <div>
+                <label className="text-xs font-medium text-gray-700 block mb-1">ASC 606 Treatment</label>
+                <select
+                  className="border rounded px-3 py-2 text-sm w-full"
+                  value={amendTreatment}
+                  onChange={(e) => setAmendTreatment(e.target.value as "prospective" | "cumulative_catch_up")}
+                >
+                  <option value="prospective">Prospective — new terms apply from effective date forward</option>
+                  <option value="cumulative_catch_up">Cumulative catch-up — post delta adjustment to current period</option>
+                </select>
+              </div>
+
+              <div>
+                <label className="text-xs font-medium text-gray-700 block mb-1">Change Type</label>
+                <select
+                  className="border rounded px-3 py-2 text-sm w-full"
+                  value={amendChangeType}
+                  onChange={(e) => setAmendChangeType(e.target.value)}
+                >
+                  <option value="price_change">Price change</option>
+                  <option value="add_product">Add product / performance obligation</option>
+                  <option value="remove_product">Remove product / performance obligation</option>
+                  <option value="other">Other</option>
+                </select>
+              </div>
+
+              <div>
+                <label className="text-xs font-medium text-gray-700 block mb-1">Notes (optional)</label>
+                <textarea
+                  className="border rounded px-3 py-2 text-sm w-full"
+                  rows={2}
+                  placeholder="e.g. Customer requested price reduction per email 2025-06-01"
+                  value={amendNotes}
+                  onChange={(e) => setAmendNotes(e.target.value)}
+                />
+              </div>
+            </div>
+
+            <div className="flex justify-end gap-2 pt-2">
+              <Button variant="outline" onClick={() => setShowAmendModal(false)}>
+                Cancel
+              </Button>
+              <Button onClick={submitAmendment} disabled={amendSaving}>
+                {amendSaving ? "Saving…" : "Save Amendment"}
+              </Button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );

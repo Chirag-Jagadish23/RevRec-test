@@ -1,4 +1,5 @@
 # backend/app/routers/contracts.py
+import json
 from fastapi import APIRouter, Depends, HTTPException
 from datetime import datetime
 from sqlmodel import Session, select
@@ -6,10 +7,10 @@ from sqlalchemy import delete
 
 from ..auth import require
 from ..db import get_session
-from ..models.models import ContractRecord, ContractLine, Product
+from ..models.models import ContractRecord, ContractLine, ContractModification, Product, ScheduleRow
 from ..services.allocation_service import allocate_contract
 from ..services.revrec_engine import build_schedule
-from ..services.schedule_service import save_schedule_rows
+from ..services.schedule_service import save_schedule_rows, post_catchup_row
 
 router = APIRouter(prefix="/contracts", tags=["contracts"])
 
@@ -152,6 +153,158 @@ def save_contract(payload: dict, session: Session = Depends(get_session)):
     return {"status": "saved", "contract_id": cid}
 
 
+# ---------------- MODIFY CONTRACT (amendment with history) ----------------
+@router.post("/{contract_id}/modify")
+def modify_contract(contract_id: str, payload: dict, session: Session = Depends(get_session)):
+    """Record an ASC 606 contract amendment with full before/after snapshot."""
+    contract = session.get(ContractRecord, contract_id)
+    if not contract:
+        raise HTTPException(404, "Contract not found")
+
+    effective_date = payload.get("effective_date")
+    if not effective_date:
+        raise HTTPException(400, "effective_date is required for contract modifications")
+
+    treatment = payload.get("treatment", "prospective")
+    change_type = payload.get("change_type", "other")
+    notes = payload.get("notes")
+
+    # --- Capture BEFORE snapshot ---
+    old_lines = session.exec(
+        select(ContractLine).where(ContractLine.contract_id == contract_id)
+    ).all()
+    snapshot_before = json.dumps({
+        "header": {
+            "customer": contract.customer,
+            "transaction_price": contract.transaction_price,
+            "start_date": contract.start_date.isoformat(),
+            "end_date": contract.end_date.isoformat(),
+        },
+        "lines": [
+            {
+                "product_code": l.product_code,
+                "amount": l.override_price,
+                "ssp": l.ssp,
+                "revrec_code": l.revrec_code,
+            }
+            for l in old_lines
+        ],
+    })
+
+    # --- Apply new contract terms ---
+    customer = payload.get("customer", contract.customer)
+    transaction_price = payload.get("transaction_price", contract.transaction_price)
+    start_date_raw = payload.get("start_date", contract.start_date.isoformat())
+    end_date_raw = payload.get("end_date", contract.end_date.isoformat())
+    line_items = payload.get("lines", [])
+
+    if not isinstance(line_items, list) or len(line_items) == 0:
+        raise HTTPException(400, "lines must be a non-empty array")
+
+    contract.customer = customer
+    contract.transaction_price = float(transaction_price)
+    contract.start_date = parse_date(start_date_raw)
+    contract.end_date = parse_date(end_date_raw)
+
+    session.exec(delete(ContractLine).where(ContractLine.contract_id == contract_id))
+    for item in line_items:
+        code = item.get("product_code")
+        amount = item.get("amount")
+        if not code:
+            raise HTTPException(400, "Each line must include product_code")
+        if amount is None:
+            raise HTTPException(400, f"Missing amount for product {code}")
+        product = session.get(Product, code)
+        if not product:
+            raise HTTPException(400, f"Product {code} not found")
+        session.add(
+            ContractLine(
+                contract_id=contract_id,
+                product_code=code,
+                ssp=product.ssp,
+                revrec_code=product.revrec_code,
+                override_price=float(amount),
+            )
+        )
+
+    session.commit()
+
+    # --- Capture AFTER snapshot ---
+    new_lines = session.exec(
+        select(ContractLine).where(ContractLine.contract_id == contract_id)
+    ).all()
+    snapshot_after = json.dumps({
+        "header": {
+            "customer": contract.customer,
+            "transaction_price": contract.transaction_price,
+            "start_date": contract.start_date.isoformat(),
+            "end_date": contract.end_date.isoformat(),
+        },
+        "lines": [
+            {
+                "product_code": l.product_code,
+                "amount": l.override_price,
+                "ssp": l.ssp,
+                "revrec_code": l.revrec_code,
+            }
+            for l in new_lines
+        ],
+    })
+
+    # --- Record the modification ---
+    mod = ContractModification(
+        contract_id=contract_id,
+        modified_at=datetime.utcnow().isoformat(),
+        change_type=change_type,
+        treatment=treatment,
+        effective_date=effective_date,
+        snapshot_before=snapshot_before,
+        snapshot_after=snapshot_after,
+        notes=notes,
+    )
+    session.add(mod)
+    session.commit()
+    session.refresh(mod)
+
+    return {
+        "status": "modified",
+        "contract_id": contract_id,
+        "modification_id": mod.id,
+        "treatment": treatment,
+        "effective_date": effective_date,
+        "message": f"Amendment recorded. Re-allocate revenue to apply {treatment} treatment from {effective_date}.",
+    }
+
+
+# ---------------- MODIFICATION HISTORY ----------------
+@router.get("/{contract_id}/modifications")
+def list_modifications(contract_id: str, session: Session = Depends(get_session)):
+    """Return the full amendment history for a contract."""
+    contract = session.get(ContractRecord, contract_id)
+    if not contract:
+        raise HTTPException(404, "Contract not found")
+
+    mods = session.exec(
+        select(ContractModification)
+        .where(ContractModification.contract_id == contract_id)
+        .order_by(ContractModification.id)
+    ).all()
+
+    return [
+        {
+            "id": m.id,
+            "modified_at": m.modified_at,
+            "change_type": m.change_type,
+            "treatment": m.treatment,
+            "effective_date": m.effective_date,
+            "notes": m.notes,
+            "snapshot_before": json.loads(m.snapshot_before),
+            "snapshot_after": json.loads(m.snapshot_after),
+        }
+        for m in mods
+    ]
+
+
 # ---------------- ALLOCATE REVENUE ----------------
 @router.post("/allocate")
 def allocate(payload: dict, session: Session = Depends(get_session)):
@@ -170,12 +323,28 @@ def allocate(payload: dict, session: Session = Depends(get_session)):
     if not lines:
         raise HTTPException(400, "No line items to allocate")
 
+    # Optional amendment treatment params
+    treatment = payload.get("treatment")        # "prospective" | "cumulative_catch_up" | None
+    effective_date = payload.get("effective_date")  # YYYY-MM-DD | None
+
     # Allocation math + schedule generation
     allocations = allocate_contract(contract, lines, session)
     schedule = build_schedule(contract, allocations, session)
 
-    # Persist schedule rows (adjustment rows are preserved automatically)
-    result = save_schedule_rows(cid, schedule, session)
+    catchup_amount = None
+
+    if treatment == "prospective" and effective_date:
+        # Keep rows before effective_period, only add new rows from it forward
+        result = save_schedule_rows(
+            cid, schedule, session, prospective_from=effective_date[:7]
+        )
+    elif treatment == "cumulative_catch_up" and effective_date:
+        # Post the catch-up delta first (reads existing rows before clearing)
+        catchup_amount = post_catchup_row(cid, schedule, effective_date, session)
+        # Then do a normal full re-allocation (adjustment rows including the new catch-up are preserved)
+        result = save_schedule_rows(cid, schedule, session)
+    else:
+        result = save_schedule_rows(cid, schedule, session)
 
     response = {
         "status": "allocated",
@@ -184,9 +353,21 @@ def allocate(payload: dict, session: Session = Depends(get_session)):
         "schedule": schedule,
     }
 
+    warnings = []
     if result["preserved_adjustments"] > 0:
-        response["warnings"] = [
+        warnings.append(
             f"{result['preserved_adjustments']} posted adjustment row(s) were preserved and not overwritten by re-allocation."
-        ]
+        )
+    if treatment == "prospective" and effective_date:
+        warnings.append(
+            f"Prospective treatment applied: schedule rows before {effective_date[:7]} were preserved; new terms applied from {effective_date[:7]} forward."
+        )
+    if catchup_amount is not None and abs(catchup_amount) > 0:
+        warnings.append(
+            f"Cumulative catch-up of ${catchup_amount:,.2f} posted to {effective_date[:7]}."
+        )
+
+    if warnings:
+        response["warnings"] = warnings
 
     return response
