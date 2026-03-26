@@ -156,3 +156,31 @@ class ContractModification(SQLModel, table=True):
 
     # Optional human-readable description of what changed and why
     notes: Optional[str] = None
+
+
+# -------------------------------------------------------------
+# CLOSE TASK OVERRIDES (manual status updates for close orchestrator)
+# -------------------------------------------------------------
+class CloseTaskOverride(SQLModel, table=True):
+    __tablename__ = "close_task_overrides"
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+
+    # Matches task_id in close_orchestrator templates (e.g. "revrec_generate")
+    task_id: str = Field(index=True)
+
+    # YYYY-MM close period this override applies to
+    period_key: str = Field(index=True)
+
+    # Entity (e.g. "US_PARENT")
+    entity_id: str = Field(default="US_PARENT")
+
+    # "in_progress" | "blocked" | "pending"
+    # "done" is never stored — auto-detection always wins
+    status: str
+
+    # Optional context note from the user
+    notes: Optional[str] = None
+
+    # ISO datetime of last update
+    updated_at: str

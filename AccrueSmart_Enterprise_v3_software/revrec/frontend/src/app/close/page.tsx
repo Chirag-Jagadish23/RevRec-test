@@ -5,14 +5,18 @@ import { useEffect, useMemo, useState } from "react";
 import { api } from "@/src/lib/api";
 import { Button, Card, Input } from "@/src/components/ui";
 
+type TaskStatus = "done" | "in_progress" | "blocked" | "overdue" | "pending";
+
 type CloseTask = {
   task_id: string;
   title: string;
   day_bucket: "D+1" | "D+2" | "D+3";
   owner_role?: string;
   owner?: string;
-  status: "done" | "pending";
+  status: TaskStatus;
   status_reason?: string;
+  deadline?: string;
+  override?: { status: string; notes?: string; updated_at?: string } | null;
 };
 
 type Blocker = {
@@ -51,6 +55,31 @@ type ClosePackageResponse = {
   audit_trail_extracts: { row: any }[];
 };
 
+// ---- Status badge styling ----
+const STATUS_STYLES: Record<TaskStatus, string> = {
+  done:        "bg-green-50 text-green-700 border-green-200",
+  in_progress: "bg-blue-50 text-blue-700 border-blue-200",
+  blocked:     "bg-orange-50 text-orange-700 border-orange-200",
+  overdue:     "bg-red-50 text-red-700 border-red-200",
+  pending:     "bg-gray-50 text-gray-600 border-gray-200",
+};
+
+const STATUS_LABELS: Record<TaskStatus, string> = {
+  done:        "Done",
+  in_progress: "In Progress",
+  blocked:     "Blocked",
+  overdue:     "Overdue",
+  pending:     "Pending",
+};
+
+function StatusBadge({ status }: { status: TaskStatus }) {
+  return (
+    <span className={`text-xs rounded px-2 py-0.5 border font-medium ${STATUS_STYLES[status] ?? STATUS_STYLES.pending}`}>
+      {STATUS_LABELS[status] ?? status}
+    </span>
+  );
+}
+
 export default function ClosePage() {
   const [periodKey, setPeriodKey] = useState("2026-01");
   const [entityId, setEntityId] = useState("US_PARENT");
@@ -62,8 +91,14 @@ export default function ClosePage() {
   const [dashboard, setDashboard] = useState<CloseDashboardResponse | null>(null);
   const [closePackage, setClosePackage] = useState<ClosePackageResponse | null>(null);
 
-  // local editable owner assignments (UI-side for now)
+  // local editable owner assignments (UI-side)
   const [ownerOverrides, setOwnerOverrides] = useState<Record<string, string>>({});
+
+  // override modal state
+  const [overrideTask, setOverrideTask] = useState<CloseTask | null>(null);
+  const [overrideStatus, setOverrideStatus] = useState<"in_progress" | "blocked" | "pending">("in_progress");
+  const [overrideNotes, setOverrideNotes] = useState("");
+  const [overrideSaving, setOverrideSaving] = useState(false);
 
   async function loadDashboard() {
     setLoading(true);
@@ -73,7 +108,7 @@ export default function ClosePage() {
         `/close/dashboard?period_key=${encodeURIComponent(periodKey)}&entity_id=${encodeURIComponent(entityId)}`
       );
       setDashboard(res);
-      setClosePackage(null); // reset package when refreshing dashboard
+      setClosePackage(null);
     } catch (e: any) {
       setError(e?.message || "Failed to load close dashboard.");
     } finally {
@@ -87,10 +122,7 @@ export default function ClosePage() {
     try {
       const res = await api("/close/package/generate", {
         method: "POST",
-        body: JSON.stringify({
-          period_key: periodKey,
-          entity_id: entityId,
-        }),
+        body: JSON.stringify({ period_key: periodKey, entity_id: entityId }),
       });
       setClosePackage(res);
     } catch (e: any) {
@@ -98,6 +130,36 @@ export default function ClosePage() {
     } finally {
       setPkgLoading(false);
     }
+  }
+
+  async function submitOverride() {
+    if (!overrideTask) return;
+    setOverrideSaving(true);
+    try {
+      await api("/close/tasks/override", {
+        method: "PATCH",
+        body: JSON.stringify({
+          task_id: overrideTask.task_id,
+          period_key: periodKey,
+          entity_id: entityId,
+          status: overrideStatus,
+          notes: overrideNotes || null,
+        }),
+      });
+      setOverrideTask(null);
+      setOverrideNotes("");
+      await loadDashboard();
+    } catch (e: any) {
+      setError(e?.message || "Failed to save override.");
+    } finally {
+      setOverrideSaving(false);
+    }
+  }
+
+  function openOverride(task: CloseTask) {
+    setOverrideTask(task);
+    setOverrideStatus((task.override?.status as any) ?? "in_progress");
+    setOverrideNotes(task.override?.notes ?? "");
   }
 
   useEffect(() => {
@@ -135,6 +197,7 @@ export default function ClosePage() {
   }
 
   const doneCount = tasksWithOwners.filter((t) => t.status === "done").length;
+  const overdueCount = tasksWithOwners.filter((t) => t.status === "overdue").length;
   const totalCount = tasksWithOwners.length;
   const completionPct = totalCount > 0 ? Math.round((doneCount / totalCount) * 100) : 0;
 
@@ -160,7 +223,7 @@ export default function ClosePage() {
 
       {/* Controls */}
       <Card className="p-4">
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+        <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
           <div>
             <div className="text-xs text-gray-500 mb-1">Period Key</div>
             <Input
@@ -190,6 +253,13 @@ export default function ClosePage() {
               <span className="font-medium">{completionPct}%</span>
             </div>
           </div>
+
+          <div>
+            <div className="text-xs text-gray-500 mb-1">Overdue</div>
+            <div className={`h-10 rounded border px-3 flex items-center text-sm font-medium ${overdueCount > 0 ? "bg-red-50 text-red-700 border-red-200" : "bg-white text-gray-600"}`}>
+              {overdueCount > 0 ? `${overdueCount} task(s) overdue` : "None overdue"}
+            </div>
+          </div>
         </div>
       </Card>
 
@@ -201,6 +271,17 @@ export default function ClosePage() {
           <div className="text-xs uppercase tracking-wide text-gray-500 mb-1">AI Close Manager</div>
           <div className="text-sm">{dashboard.ai_close_manager_summary}</div>
         </Card>
+      )}
+
+      {/* Status legend */}
+      {dashboard && (
+        <div className="flex flex-wrap gap-2 text-xs">
+          {(Object.keys(STATUS_STYLES) as TaskStatus[]).map((s) => (
+            <span key={s} className={`rounded px-2 py-0.5 border ${STATUS_STYLES[s]}`}>
+              {STATUS_LABELS[s]}
+            </span>
+          ))}
+        </div>
       )}
 
       {/* System state */}
@@ -250,22 +331,26 @@ export default function ClosePage() {
 
               <div className="space-y-3">
                 {(byDay[bucket] || []).map((task) => (
-                  <div key={task.task_id} className="border rounded p-3 space-y-2">
+                  <div
+                    key={task.task_id}
+                    className={`border rounded p-3 space-y-2 ${
+                      task.status === "overdue" ? "border-red-200 bg-red-50/30" :
+                      task.status === "blocked" ? "border-orange-200" : ""
+                    }`}
+                  >
                     <div className="flex items-start justify-between gap-2">
                       <div>
                         <div className="text-sm font-medium">{task.title}</div>
-                        <div className="text-xs text-gray-500">{task.task_id}</div>
+                        <div className="text-xs text-gray-400">{task.task_id}</div>
                       </div>
-                      <span
-                        className={`text-xs rounded px-2 py-0.5 border ${
-                          task.status === "done"
-                            ? "bg-green-50 text-green-700 border-green-200"
-                            : "bg-gray-50 text-gray-700 border-gray-200"
-                        }`}
-                      >
-                        {task.status}
-                      </span>
+                      <StatusBadge status={task.status} />
                     </div>
+
+                    {task.deadline && task.status !== "done" && (
+                      <div className="text-xs text-gray-500">
+                        Deadline: <span className={task.status === "overdue" ? "text-red-600 font-medium" : ""}>{task.deadline}</span>
+                      </div>
+                    )}
 
                     <div>
                       <div className="text-xs text-gray-500 mb-1">Owner Assignment</div>
@@ -276,7 +361,23 @@ export default function ClosePage() {
                       />
                     </div>
 
-                    <div className="text-xs text-gray-600">{task.status_reason}</div>
+                    <div className="text-xs text-gray-500">{task.status_reason}</div>
+
+                    {task.override && (
+                      <div className="text-xs text-blue-600">
+                        Manual override: {task.override.status}
+                        {task.override.notes ? ` — ${task.override.notes}` : ""}
+                      </div>
+                    )}
+
+                    {task.status !== "done" && (
+                      <button
+                        className="text-xs text-blue-600 hover:underline"
+                        onClick={() => openOverride(task)}
+                      >
+                        Update status manually
+                      </button>
+                    )}
                   </div>
                 ))}
 
@@ -386,6 +487,48 @@ export default function ClosePage() {
             </Card>
           </div>
         </>
+      )}
+
+      {/* Manual override modal */}
+      {overrideTask && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
+          <div className="bg-white rounded-lg shadow-xl p-6 w-full max-w-md space-y-4">
+            <div className="font-semibold text-base">Update Task Status</div>
+            <div className="text-sm text-gray-600">{overrideTask.title}</div>
+
+            <div className="space-y-1">
+              <div className="text-xs text-gray-500">Status</div>
+              <select
+                className="w-full border rounded px-2 py-2 text-sm bg-white"
+                value={overrideStatus}
+                onChange={(e) => setOverrideStatus(e.target.value as any)}
+              >
+                <option value="in_progress">In Progress</option>
+                <option value="blocked">Blocked</option>
+                <option value="pending">Pending</option>
+              </select>
+              <div className="text-xs text-gray-400">Note: "Done" is set automatically when system data is present.</div>
+            </div>
+
+            <div className="space-y-1">
+              <div className="text-xs text-gray-500">Notes (optional)</div>
+              <textarea
+                className="w-full border rounded px-2 py-2 text-sm resize-none"
+                rows={3}
+                placeholder="e.g. Waiting on finance team to confirm GL mapping…"
+                value={overrideNotes}
+                onChange={(e) => setOverrideNotes(e.target.value)}
+              />
+            </div>
+
+            <div className="flex gap-2 justify-end">
+              <Button variant="outline" onClick={() => setOverrideTask(null)}>Cancel</Button>
+              <Button onClick={submitOverride} disabled={overrideSaving}>
+                {overrideSaving ? "Saving..." : "Save"}
+              </Button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );

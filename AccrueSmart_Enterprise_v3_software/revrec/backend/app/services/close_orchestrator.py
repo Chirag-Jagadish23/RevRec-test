@@ -1,6 +1,8 @@
 # backend/app/services/close_orchestrator.py
 from __future__ import annotations
 
+import calendar
+from datetime import date, timedelta
 from typing import Any, Dict, List, Optional
 from datetime import datetime
 
@@ -81,9 +83,6 @@ def _count_rows(session: Session, table_name: str) -> int:
 
 
 def _count_query(session: Session, sql: str, params: Optional[Dict[str, Any]] = None) -> int:
-    """
-    Use for COUNT(*) queries. Guaranteed int.
-    """
     val = _safe_scalar(session, sql, params=params, default=0)
     try:
         return int(val or 0)
@@ -92,28 +91,71 @@ def _count_query(session: Session, sql: str, params: Optional[Dict[str, Any]] = 
 
 
 # ----------------------------
+# Deadline computation
+# ----------------------------
+def _compute_deadline(period_key: str, day_bucket: str) -> Optional[date]:
+    """
+    Compute the D+N deadline date for a task.
+    period_key = "YYYY-MM"; day_bucket = "D+1" | "D+2" | "D+3"
+    Returns the calendar date by which the task should be done.
+    """
+    try:
+        year, month = int(period_key[:4]), int(period_key[5:7])
+        last_day = calendar.monthrange(year, month)[1]
+        period_end = date(year, month, last_day)
+        n = int(day_bucket.split("+")[1])
+        return period_end + timedelta(days=n)
+    except Exception:
+        return None
+
+
+# ----------------------------
+# Manual override loader
+# ----------------------------
+def _load_task_overrides(session: Session, period_key: str, entity_id: str) -> Dict[str, Dict[str, Any]]:
+    """Load manual task status overrides from close_task_overrides table."""
+    if not _table_exists(session, "close_task_overrides"):
+        return {}
+
+    rows = _safe_rows(
+        session,
+        "SELECT task_id, status, notes, updated_at FROM close_task_overrides "
+        "WHERE period_key = :pk AND entity_id = :eid",
+        {"pk": period_key, "eid": entity_id},
+    )
+
+    result: Dict[str, Dict[str, Any]] = {}
+    for r in rows:
+        try:
+            m = dict(r._mapping)
+            result[m["task_id"]] = m
+            continue
+        except Exception:
+            pass
+        if isinstance(r, (tuple, list)) and len(r) >= 2:
+            result[r[0]] = {"task_id": r[0], "status": r[1], "notes": r[2] if len(r) > 2 else None, "updated_at": r[3] if len(r) > 3 else None}
+    return result
+
+
+# ----------------------------
 # Auto-status (real system state)
 # ----------------------------
 def _mock_system_state(session: Session, period_key: str, entity_id: str = "US_PARENT") -> Dict[str, Any]:
     """
     Kept function name for compatibility, but now returns REAL state derived from DB tables.
-    Replace/rename later to _system_state if you want.
     """
 
-    # Core presence checks (adjust table names if your schema differs)
     contracts_posted_count = _count_rows(session, "contracts")
-    revrec_rows_count = _count_rows(session, "schedule_rows")  # rev rec schedules
+    revrec_rows_count = _count_rows(session, "schedule_rows")
     commissions_count = _count_rows(session, "commissions")
     leases_count = _count_rows(session, "leases")
     fixed_assets_count = _count_rows(session, "fixed_assets")
     tax_rows_count = _count_rows(session, "tax_entries") if _table_exists(session, "tax_entries") else _count_rows(session, "tax")
 
-    # GL / audit posting tables (best effort)
     gl_batches_count = _count_rows(session, "gl_batches")
     gl_entries_count = _count_rows(session, "gl_entries")
     audit_log_count = _count_rows(session, "audit_log")
 
-    # Source-specific GL posting status (if gl_batches has source_type/source/module)
     gl_posted_by_source = {
         "revrec": False,
         "leases": False,
@@ -124,7 +166,6 @@ def _mock_system_state(session: Session, period_key: str, entity_id: str = "US_P
 
     if _table_exists(session, "gl_batches"):
         for src in gl_posted_by_source.keys():
-            # common possible column names
             for source_col in ["source_type", "source", "module"]:
                 for posted_col in ["status", "is_posted", "posted"]:
                     sql = None
@@ -149,7 +190,6 @@ def _mock_system_state(session: Session, period_key: str, entity_id: str = "US_P
                 if gl_posted_by_source[src]:
                     break
 
-    # Fallback inference if no source-specific batch rows exist but generic GL exists
     if gl_batches_count == 0 and gl_entries_count > 0:
         gl_posted_by_source["revrec"] = revrec_rows_count > 0
         gl_posted_by_source["leases"] = leases_count > 0
@@ -157,10 +197,8 @@ def _mock_system_state(session: Session, period_key: str, entity_id: str = "US_P
         gl_posted_by_source["commissions"] = commissions_count > 0
         gl_posted_by_source["tax"] = tax_rows_count > 0
 
-    # Tax completion heuristic
     tax_complete = bool(tax_rows_count > 0 and (gl_posted_by_source["tax"] or gl_batches_count > 0))
 
-    # Optional period locks table
     period_locked = False
     if _table_exists(session, "period_locks"):
         for col_entity in ["entity_id", "entity", "legal_entity"]:
@@ -256,34 +294,27 @@ def _dependency_edges(entity_id: str) -> List[Dict[str, str]]:
     return deps
 
 
-def _task_status_from_state(task_id: str, state: Dict[str, Any]) -> Dict[str, Any]:
+def _auto_done(task_id: str, state: Dict[str, Any]) -> bool:
+    """Returns True if system data indicates this task is complete."""
     source_flags = state.get("gl_batches_posted_by_source", {}) or {}
-
     mapping = {
         "contracts_post": bool(state.get("contracts_posted")),
         "revrec_generate": bool(state.get("revrec_schedules_exist")),
         "commissions_run": bool(state.get("commissions_run")),
         "leases_run": bool(state.get("leases_run")),
         "depr_run": bool(state.get("depreciation_run")),
-        "gl_post_subledgers": all(
-            [
-                bool(source_flags.get("revrec")),
-                bool(source_flags.get("leases")),
-                bool(source_flags.get("depreciation")),
-                bool(source_flags.get("commissions")),
-            ]
-        ) or (state.get("gl_batches_count", 0) > 0 and state.get("gl_entries_count", 0) > 0),
+        "gl_post_subledgers": all([
+            bool(source_flags.get("revrec")),
+            bool(source_flags.get("leases")),
+            bool(source_flags.get("depreciation")),
+            bool(source_flags.get("commissions")),
+        ]) or (state.get("gl_batches_count", 0) > 0 and state.get("gl_entries_count", 0) > 0),
         "tax_finalize": bool(state.get("tax_complete")),
         "close_review": bool(state.get("tax_complete")) and bool(state.get("gl_entries_count", 0) > 0),
         "cfo_signoff": bool(state.get("period_locked")),
         "ic_confirm": True if state.get("entity_id", "").upper() == "US_PARENT" else False,
     }
-
-    done = mapping.get(task_id, False)
-
-    if done:
-        return {"status": "done", "status_reason": "Auto-completed from system state"}
-    return {"status": "pending", "status_reason": "Waiting on source data or dependencies"}
+    return mapping.get(task_id, False)
 
 
 def _compute_blockers(tasks: List[Dict[str, Any]], deps: List[Dict[str, str]]) -> List[Dict[str, Any]]:
@@ -313,6 +344,7 @@ def _compute_blockers(tasks: List[Dict[str, Any]], deps: List[Dict[str, str]]) -
 
 def _ai_close_manager_summary(tasks: List[Dict[str, Any]], blockers: List[Dict[str, Any]], state: Dict[str, Any]) -> str:
     pending = [t for t in tasks if t["status"] != "done"]
+    overdue = [t for t in tasks if t["status"] == "overdue"]
     top_blockers = blockers[:3]
 
     if not pending:
@@ -320,8 +352,12 @@ def _ai_close_manager_summary(tasks: List[Dict[str, Any]], blockers: List[Dict[s
 
     lines = []
     lines.append(f"{len(pending)} tasks remain for {state.get('entity_id')} {state.get('period_key')}.")
+
+    if overdue:
+        lines.append(f"{len(overdue)} task(s) are OVERDUE: {', '.join(t['title'] for t in overdue)}.")
+
     if top_blockers:
-        lines.append(f"{len(blockers)} blockers detected. Top blockers:")
+        lines.append(f"{len(blockers)} blocker(s) detected. Top blockers:")
         for b in top_blockers:
             lines.append(f"- {b['task_title']} is blocked by {b['blocked_by_title']} (owner: {b.get('owner') or 'Unassigned'})")
     else:
@@ -331,20 +367,63 @@ def _ai_close_manager_summary(tasks: List[Dict[str, Any]], blockers: List[Dict[s
 
 def build_close_dashboard(session: Session, period_key: str, entity_id: str = "US_PARENT") -> Dict[str, Any]:
     state = _mock_system_state(session, period_key=period_key, entity_id=entity_id)
-
     templates = _close_task_templates(entity_id)
     deps = _dependency_edges(entity_id)
+    today = date.today()
 
+    # Step 1: auto done/not-done for each task
+    done_map: Dict[str, bool] = {t["task_id"]: _auto_done(t["task_id"], state) for t in templates}
+
+    # Step 2: build dep map: task_id → [depends_on task_ids]
+    dep_map: Dict[str, List[str]] = {}
+    for d in deps:
+        dep_map.setdefault(d["task_id"], []).append(d["depends_on"])
+
+    # Step 3: load manual overrides from DB
+    overrides = _load_task_overrides(session, period_key, entity_id)
+
+    # Step 4: compute final status for each task
     tasks: List[Dict[str, Any]] = []
     for t in templates:
-        auto = _task_status_from_state(t["task_id"], state)
-        tasks.append(
-            {
-                **t,
-                "owner": t.get("owner_role"),
-                **auto,
-            }
-        )
+        task_id = t["task_id"]
+        is_done = done_map[task_id]
+
+        if is_done:
+            status = "done"
+            reason = "Auto-completed from system state"
+        else:
+            # Check which dependencies are not yet done
+            my_deps = dep_map.get(task_id, [])
+            unmet_deps = [d for d in my_deps if not done_map.get(d, False)]
+
+            if unmet_deps:
+                status = "blocked"
+                reason = f"Waiting on: {', '.join(unmet_deps)}"
+            else:
+                status = "in_progress"
+                reason = "Dependencies met — waiting on source data"
+
+            # Overdue: past D+N deadline and still not done
+            deadline = _compute_deadline(period_key, t["day_bucket"])
+            if deadline and today > deadline:
+                status = "overdue"
+                reason = f"Past deadline ({deadline.isoformat()}) — was {status}"
+
+            # Apply manual override (never overrides auto "done"; can override overdue too)
+            if task_id in overrides:
+                ov = overrides[task_id]
+                if ov.get("status") in ("in_progress", "blocked", "pending"):
+                    status = ov["status"]
+                    reason = ov.get("notes") or reason
+
+        tasks.append({
+            **t,
+            "owner": t.get("owner_role"),
+            "status": status,
+            "status_reason": reason,
+            "deadline": _compute_deadline(period_key, t["day_bucket"]).isoformat() if _compute_deadline(period_key, t["day_bucket"]) else None,
+            "override": overrides.get(task_id),
+        })
 
     blockers = _compute_blockers(tasks, deps)
     ai_summary = _ai_close_manager_summary(tasks, blockers, state)
@@ -402,17 +481,24 @@ def _exception_summary(dashboard: Dict[str, Any]) -> Dict[str, Any]:
     blockers = dashboard.get("blockers", []) or []
     tasks = dashboard.get("tasks", []) or []
     pending = [t for t in tasks if t.get("status") != "done"]
+    overdue = [t for t in tasks if t.get("status") == "overdue"]
 
     return {
         "blocker_count": len(blockers),
         "pending_task_count": len(pending),
+        "overdue_task_count": len(overdue),
         "high_severity_blockers": [b for b in blockers if b.get("severity") == "high"],
+        "overdue_tasks": [
+            {"task_id": t.get("task_id"), "title": t.get("title"), "deadline": t.get("deadline")}
+            for t in overdue
+        ],
         "pending_tasks": [
             {
                 "task_id": t.get("task_id"),
                 "title": t.get("title"),
                 "day_bucket": t.get("day_bucket"),
                 "owner": t.get("owner"),
+                "status": t.get("status"),
             }
             for t in pending
         ],
@@ -445,9 +531,8 @@ def _audit_trail_extracts(session: Session, limit: int = 50) -> List[Dict[str, A
 
     extracts: List[Dict[str, Any]] = []
     for r in rows:
-        # Try to preserve row content better than plain str(Row)
         try:
-            mapping = dict(r._mapping)  # SQLAlchemy Row
+            mapping = dict(r._mapping)
             extracts.append(mapping)
             continue
         except Exception:
@@ -480,7 +565,12 @@ def _close_memo(dashboard: Dict[str, Any], exceptions: Dict[str, Any]) -> str:
     lines.append(f"- Period locked: {'Yes' if state.get('period_locked') else 'No'}")
     lines.append("")
     lines.append(f"Pending tasks: {exceptions.get('pending_task_count', 0)}")
+    lines.append(f"Overdue tasks: {exceptions.get('overdue_task_count', 0)}")
     lines.append(f"Blockers: {exceptions.get('blocker_count', 0)}")
+    if exceptions.get("overdue_tasks"):
+        lines.append("Overdue:")
+        for t in exceptions["overdue_tasks"][:5]:
+            lines.append(f"- {t.get('title')} (deadline: {t.get('deadline')})")
     if exceptions.get("high_severity_blockers"):
         lines.append("High severity blockers:")
         for b in exceptions["high_severity_blockers"][:5]:
